@@ -45,8 +45,10 @@ Skaner jest **narzędziem badawczym**, nie produktem. Ciężar pracy leży w pun
 
 ### Stos technologiczny
 
-- **Architektura:** izolowane laboratorium w modelu Docker-out-of-Docker (DooD),
-  mapowanie `/var/run/docker.sock`
+- **Architektura:** narzędzia (Trivy, Python, zależności) zamknięte w kontenerze, żeby nie
+  instalować ich na maszynie hosta. Pierwotnie w modelu Docker-out-of-Docker z mapowaniem
+  `/var/run/docker.sock`; przy `--image-src remote` montowanie gniazda przestaje być potrzebne —
+  patrz [Kontener orkiestrujący](#kontener-orkiestrujący-po-co-był-dood-i-co-z-niego-zostaje)
 - **Język:** Python — `requests`, `pandas`, `tqdm`, `subprocess`
 - **Skaner:** Aqua Security Trivy (wyniki JSON)
 - **Źródła:** API Docker Hub oraz Google Container Registry
@@ -494,11 +496,59 @@ Trzy zalety rozstrzygające przy tej skali:
   co *„enables faster scans of the same container image **or different images that share
   layers**"*. Tysiące obrazów z Huba dzielą te same bazy `debian` i `alpine`, więc analiza bazy
   wykonuje się raz. To dokładnie odwrotność wady wariantu z `docker rmi`.
-- **Brak demona.** Wolumen `/var/run/docker.sock` przestaje być potrzebny do skanowania.
-  Architektura DooD zostaje opisana w pracy jako model izolacji laboratorium, ale nie jest już
-  zależnością techniczną skanera.
+- **Znika potrzeba montowania gniazda Dockera.** Skaner nadal działa w kontenerze — patrz
+  [Kontener orkiestrujący](#kontener-orkiestrujący-po-co-był-dood-i-co-z-niego-zostaje) — ale
+  przestaje potrzebować `/var/run/docker.sock`.
 - **Ścieżka pobierania jest sterowalna.** `pull_ref` wskazujący `mirror.gcr.io` omija limit
   200/6 h Docker Huba.
+
+### Kontener orkiestrujący: po co był DooD i co z niego zostaje
+
+Pod nazwą „DooD" kryły się **dwie niezależne rzeczy**, które trzeba rozdzielić, bo tylko jedna
+z nich odpada:
+
+1. **Trivy i orkiestrator działają w kontenerze**, żeby nie instalować skanera, Pythona
+   i zależności na maszynie i nie zaśmiecać systemu. **To był powód sięgnięcia po kontener i to
+   zostaje bez zmian.**
+2. **Montowanie `/var/run/docker.sock`** do tego kontenera, żeby Trivy w środku mógł rozmawiać
+   z demonem Dockera hosta i wykonywać `docker pull` oraz czytać lokalne obrazy. **Tylko ten
+   element odpada.**
+
+Przy `--image-src remote` kontener nie potrzebuje demona hosta — komunikuje się bezpośrednio
+z rejestrami po HTTPS. Cel „nie zaśmiecać komputera" jest więc realizowany **lepiej niż wcześniej**:
+na hoście nie ma ani skanera, ani obrazów badanych, ani warstw w lokalnym storage Dockera.
+
+#### To jest dodatkowo argument merytoryczny do pracy
+
+Zamontowanie `/var/run/docker.sock` w kontenerze jest równoważne **oddaniu temu kontenerowi
+uprawnień roota na hoście** — proces w środku może utworzyć dowolny kontener z dowolnym
+montowaniem. NIST SP 800-190 wskazuje to wprost jako antywzorzec, podobnie Liz Rice w kontekście
+ucieczek z kontenera.
+
+Rezygnacja z tego montowania oznacza więc, że **narzędzie badawcze samo przestaje łamać zasady,
+których skuteczność praca mierzy**. Warto to opisać w pracy jako świadome zastosowanie badanych
+reguł do własnego laboratorium — dobrze wygląda przy pkt 1 (izolacja) i jest uczciwsze niż
+opisywanie DooD jako „modelu izolacji", którym nigdy nie był.
+
+#### Co kontener potrzebuje w zamian
+
+Zamiast gniazda Dockera potrzebne są dwie rzeczy:
+
+- **Sieć wychodząca** do `mirror.gcr.io`, `gcr.io`, Docker Huba i GHCR (baza Trivy).
+- **Wolumeny na dane trwałe:** `trivy_cache/`, `reports/`, `results/` i `lab.db`. To jest
+  **krytyczne**, nie kosmetyczne: gdyby cache siedział w warstwie zapisywalnej kontenera, każde
+  jego odtworzenie kasowałoby zarówno przypiętą bazę CVE (rozjeżdżając
+  [zamrożenie wersji](#krytyczne-zamrożenie-bazy-cve-na-czas-kampanii)), jak i cache warstw,
+  czyli główną oszczędność czasu. Kolejka SQLite w kontenerze oznaczałaby też utratę postępu
+  kampanii.
+
+Uprawnienia kontenera schodzą więc do zwykłego procesu z dostępem do sieci i kilku wolumenów —
+bez `--privileged`, bez montowania gniazda, bez potrzeby roota.
+
+`Dockerfile` wymaga przy tym domknięcia braku `COPY` źródeł (patrz
+[Dług techniczny](#dług-techniczny-w-istniejącym-kodzie)) — dziś kod działa wyłącznie
+z montowania katalogu roboczego, co jest wygodne przy rozwoju, ale nie daje odtwarzalnego obrazu
+narzędzia do opisania w pracy.
 
 ### Krytyczne: zamrożenie bazy CVE na czas kampanii
 
@@ -622,8 +672,9 @@ Przy 10 tys. obrazów: ~15–20 GB surowego JSON-a (obecnie 75 raportów = ~130 
 `report_iojs.json` ma 12 MB). Dysk w chwili planowania: C: 178 GB wolnego, D: 715 GB;
 `reports/` 115 MB, `trivy_cache/` 2,3 GB.
 
-Wybór trybu pobierania obrazów (i wynikające z niego odejście od demona Dockera) jest omówiony
-w [Architekturze kampanii skanowania](#architektura-kampanii-skanowania).
+Kluczowe: obrazy badane **nie trafiają na dysk hosta ani do lokalnego storage Dockera** —
+zostają tylko raporty i cache analizy. Wybór trybu pobierania omawia
+[Architektura kampanii skanowania](#architektura-kampanii-skanowania).
 
 ## Stan repozytorium
 
