@@ -214,8 +214,8 @@ Fakty do zacytowania w rozdz. 2 (kryteria doboru próby):
   `redis`, `mysql`, `php`, `ruby` **nie istnieje** — to ograniczenie metodologiczne do opisania
   w pracy, nie brak w kodzie.
 - Każde repo distroless ma **4 stabilne aliasy**: `latest`, `debug`, `nonroot`, `debug-nonroot`
-  (pozostałe ~13 tys. tagów to identyfikatory commitów). Do badania bierzemy **tylko `latest`
-  i `nonroot`** — patrz Konsekwencja 2.
+  (pozostałe ~13 tys. tagów to identyfikatory commitów). Do badania bierzemy **wyłącznie
+  `latest`** — patrz Konsekwencje 1 i 2.
 - Rozmiary referencyjne `python`: `3.10.21-alpine` ~20 MB, `3.10.21-slim` ~45 MB,
   `latest` ~415 MB.
 
@@ -254,22 +254,41 @@ bierzemy z `tag_last_pushed` z API, a dla distroless trzeba albo zrezygnować z 
 albo wziąć datę z metadanych rejestru (`timeUploaded`), nie z configu. Do zapisania jako
 ograniczenie w rozdz. 5.
 
-### Konsekwencja 1 — `latest` i `nonroot` dadzą identyczny wynik Trivy
+### Konsekwencja 1 — skanujemy tylko `latest` (decyzja podjęta)
 
-Identyczne warstwy to identyczny inwentarz pakietów, czyli **identyczny zbiór CVE**. Trzymanie
-obu jako pełnoprawnych wierszy matrycy podwaja liczebność distroless, nie wnosząc **żadnej**
-nowej informacji o podatnościach.
+Identyczne warstwy to identyczny inwentarz pakietów, czyli **identyczny zbiór CVE**. Skanowanie
+obu wariantów byłoby więc pobraniem tej samej informacji dwa razy.
 
-`nonroot` jest wymiarem **utwardzania konfiguracji**, nie inwentarza pakietów. Ma realną
-wartość jako realizacja zalecenia NIST SP 800-190 o nieuruchamianiu jako root — ale należy go
-raportować jako **flagę boolowską przy obrazie**, a nie jako osobną obserwację w analizie CVE.
+**Decyzja:** z każdego repozytorium distroless bierzemy **wyłącznie tag `latest`** — jeden wiersz
+matrycy na repozytorium. `nonroot` nie jest skanowany.
+
+**Dlaczego `latest`, a nie `nonroot`.** Wybór nie jest dowolny, mimo że dla CVE oba są
+równoważne. Obrazy z Huba w klasach `standard`, `slim` i `alpine` domyślnie działają jako root.
+Gdybyśmy jako reprezentanta distroless wzięli `nonroot` (`User = "65532"`), do delty
+`distroless − standard` wszedłby **dodatkowy czynnik: zmiana użytkownika**, którego pozostałe
+klasy nie mają. `latest` ma `User = "0"`, czyli identycznie jak warianty z Huba, więc uprzywilejowanie
+pozostaje **stałą w całym porównaniu** i delta mierzy wyłącznie różnice w userlandzie i zestawie
+pakietów. To eliminuje confounder, którego inaczej trzeba by tłumaczyć w rozdz. 6.
+
+**`nonroot` nadal jest treścią pracy — tylko nie obserwacją.** Jego właściwości są udowodnione
+inspekcją manifestów, bez żadnego skanu: identyczne warstwy, `User = "0"` vs `User = "65532"`.
+Wynika z tego wniosek wart osobnego akapitu w punkcie 7: **utwardzenie użytkownika jest w
+distroless darmowe** — realizuje zalecenie NIST SP 800-190 o nieuruchamianiu jako root przy
+zerowej zmianie liczby CVE i zerowej utracie funkcjonalności. To jedyny punkt w całym badaniu,
+gdzie utwardzanie nic nie kosztuje, co dobrze kontrastuje z pozostałymi klasami, gdzie redukcja
+CVE zawsze wiąże się z utratą możliwości runtime.
+
+W matrycy odnotowujemy to kolumną `nonroot_available` (własność repozytorium), a nie osobnym
+wierszem.
 
 ### Konsekwencja 2 — `debug` wyłączony ze zbioru (decyzja podjęta)
 
 **Decyzja:** warianty `debug` i `debug-nonroot` **nie wchodzą do badania**. Nie są rekomendowane
-produkcyjnie, więc nie reprezentują realnej metody utwardzania. Zatwierdzony zbiór distroless to
-`latest` + `nonroot`. Fetcher odfiltrowuje tagi `debug*` już na etapie enumeracji GCR (Krok 2),
-a nie dopiero w analizie.
+produkcyjnie, więc nie reprezentują realnej metody utwardzania.
+
+Łącznie z Konsekwencją 1 daje to jedną regułę dla całego GCR: **z czterech aliasów zostaje
+wyłącznie `latest`**. Fetcher odfiltrowuje `debug`, `debug-nonroot` i `nonroot` już na etapie
+enumeracji GCR (Krok 2), a nie dopiero w analizie.
 
 Wiersze `debug` w tabeli powyżej zostają w dokumencie **wyłącznie jako dowód pomiarowy** — to
 one pokazują, że aliasy distroless redukują się do dwóch inwentarzy pakietów, co uzasadnia
@@ -280,10 +299,15 @@ schemacie — patrz [Punkt 7: standard jako baseline](#punkt-7-standard-jako-bas
 
 ### Konsekwencja 3 — błąd w regule deduplikacji
 
-Poprzedni plan deduplikował **po digescie manifestu**. To nie zadziała: `latest` i `nonroot`
-mają **różne digesty manifestu i identyczne warstwy**. Deduplikacja po digescie ich nie sklei,
-więc N spuchnie o duplikaty profili CVE — dokładnie ta pseudoreplikacja, której plan miał
-zapobiegać.
+Poprzedni plan deduplikował **po digescie manifestu**. Para `latest` / `nonroot` pokazuje, że to
+niewystarczające: mają **różne digesty manifestu i identyczne warstwy**, więc deduplikacja po
+digescie ich nie sklei i N spuchnie o duplikaty profili CVE — dokładnie ta pseudoreplikacja,
+której plan miał zapobiegać.
+
+W samym GCR problem znika przez decyzję z Konsekwencji 1 (bierzemy tylko `latest`), ale reguła
+zostaje potrzebna **po stronie Huba**, gdzie skala jest znacznie większa: aliasy w rodzaju
+`3.10-alpine`, `3.10.21-alpine` i `3.10.21-alpine3.24` wskazują ten sam obraz, a część tagów
+różni się wyłącznie metadanymi.
 
 **Poprawka:** kluczem deduplikacji dla analizy CVE musi być **lista warstw** (albo `diff_ids`
 z rootfs), nie digest manifestu. Digest manifestu zostaje jako identyfikator artefaktu do
@@ -298,12 +322,14 @@ Wersja obowiązująca używa **czterech klas** z flagami jako osobnymi wymiarami
 - `alpine` — `-alpine`, `-alpine3.24`; musl libc, busybox, apk
 - `distroless` — brak menedżera pakietów i powłoki
 
-Czynnik ortogonalny, mierzony niezależnie od klasy:
+Taksonomia nie ma czynników ortogonalnych — klasa jednoznacznie opisuje obraz. Uprzywilejowanie
+jest **stałą całego badania** (wszystkie skanowane obrazy działają jako root, `User = "0"`), co
+jest celowe: dzięki temu delty z punktu 7 nie są zanieczyszczone zmianą użytkownika
+(patrz Konsekwencja 1).
 
-- `nonroot` — flaga konfiguracyjna; **nie tworzy osobnej obserwacji CVE** (patrz Konsekwencja 1)
-
-Tagi `debug` i `debug-nonroot` są **odfiltrowywane na etapie pobierania** i nie mają
-reprezentacji w taksonomii (patrz Konsekwencja 2).
+Aliasy `debug`, `debug-nonroot` i `nonroot` są **odfiltrowywane na etapie pobierania** i nie mają
+reprezentacji w taksonomii (Konsekwencje 1 i 2). Dostępność wariantu `nonroot` jest zapisywana
+jako `nonroot_available` i omawiana jakościowo, bez skanu.
 
 ## Punkt 7: standard jako baseline
 
@@ -372,7 +398,7 @@ osobno.
 | `pull_ref` | skąd Trivy ściąga warstwy |
 | `registry` | `hub` / `gcr` / `mirror` |
 | `mirror_ok` | czy lustro miało ten obraz (sondowane, nie zakładane) |
-| `nonroot` | flaga konfiguracyjna |
+| `nonroot_available` | czy repozytorium oferuje wariant `nonroot` (własność, nie osobny wiersz) |
 | `layer_key` | klucz deduplikacji dla analizy CVE |
 | `paired` | czy `family` ma wariant `standard` + ≥1 klasę utwardzoną (warunek analizy z pkt 7) |
 
@@ -412,11 +438,20 @@ Bieżąca linia `debian13` to 12 repozytoriów, wszystkie potwierdzone jako dost
 `static`, `base`, `base-nossl`, `cc`, `java-base`, `java17`, `java21`, `java25`,
 `nodejs22`, `nodejs24`, `nodejs26`, `python3`.
 
-Przy zbiorze zatwierdzonym (`latest` + `nonroot`) to 12 obrazów × 2 tagi = **24 `image_ref`**,
-ale wobec Konsekwencji 1 zaledwie **12 niezależnych profili CVE**. Linia `debian12` (również
-dostępna) mniej więcej podwaja tę liczbę i daje dodatkowo wymiar „starsza vs nowsza baza
-Debiana" — przy czym wersja bazy jest wtedy zmienną, więc obserwacje z `debian12` i `debian13`
-nie są niezależne w obrębie tej samej technologii.
+Przy jednym tagu na repozytorium (`latest`, patrz Konsekwencja 1) to **12 obrazów = 12 skanów
+= 12 niezależnych profili CVE**. Bez sztucznego mnożenia tagów to jest realny strop tej klasy
+i trzeba go w pracy podać wprost, zamiast maskować liczbą `image_ref`.
+
+Linia `debian12` (również dostępna) podwaja tę liczbę do 24 i daje dodatkowo wymiar „starsza vs
+nowsza baza Debiana" — przy czym wersja bazy jest wtedy zmienną, więc obserwacje z `debian12`
+i `debian13` nie są niezależne w obrębie tej samej technologii i wymagają traktowania
+technologii jako czynnika grupującego.
+
+**To jest najostrzejsze ograniczenie liczebnościowe całej pracy.** Klasy `standard`, `slim`
+i `alpine` mają po kilka tysięcy kandydatów, a `distroless` kilkanaście. Żadne warstwowanie tego
+nie naprawi — asymetria wynika z tego, że distroless po prostu istnieje dla ~5 technologii.
+Wniosek: porównania z udziałem distroless opieramy na **analizie sparowanej w obrębie tych kilku
+technologii**, a nie na testach porównujących liczne grupy o skrajnie różnych liczebnościach.
 
 Sufiksy architektury (`amd64`, `arm64`, `arm`, `s390x`, `ppc64le`, `riscv64`) **nie** mnożą
 wierszy — `latest` jest indeksem manifestów, więc bierzemy jedną architekturę (amd64) na skan.
@@ -437,9 +472,10 @@ Rola asystenta w tym planie: **drogowskaz**. Kod pisze student, commit po każdy
 - [ ] **Krok 2 — katalog GCR distroless.** Lista obrazów i dozwolonych tagów z README; API GCR
   tylko potwierdza istnienie. **Nie iterować całego `manifest`.** Filtr odrzuca: końcówki
   `.sig` / `.att`, prefix `update-available-`, tagi będące samym digestem / `sha256-...`,
-  oraz **tagi `debug` i `debug-nonroot`** (decyzja z Konsekwencji 2). Zostają wyłącznie
-  `latest` i `nonroot`.
-  `feat(fetcher): enumeracja GCR distroless z filtrem tagow pomocniczych i debug`
+  oraz **`debug`, `debug-nonroot` i `nonroot`** (Konsekwencje 1 i 2). **Zostaje wyłącznie
+  `latest`** — jeden wiersz na repozytorium. Obecność wariantu `nonroot` zapisujemy jako
+  `nonroot_available`, bez pobierania obrazu.
+  `feat(fetcher): enumeracja GCR distroless, tylko tag latest`
 - [ ] **Krok 3 — tagi Hub + cache + backoff.** Token Hub tylko do API, **nie commitować**.
   `feat(fetcher): tagi Hub z cache i backoff przy 429`
 - [ ] **Krok 4 — klasyfikacja + `pull_ref` + sonda lustra.** Dla każdego repo sprawdzić
