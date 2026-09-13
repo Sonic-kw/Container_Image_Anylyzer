@@ -460,6 +460,98 @@ wierszy — `latest` jest indeksem manifestów, więc bierzemy jedną architektu
 dodajesz pokrewne korpusy (Chainguard / Wolfi) i piszesz w pracy „distroless-like", nie udając
 że to ten sam Distroless Google.
 
+## Architektura kampanii skanowania
+
+Pytanie „pobrać 10 tys. obrazów naraz i karmić Trivy, czy pobierać–skanować–usuwać po jednym"
+ma trzecią odpowiedź, lepszą od obu.
+
+### Odrzucone: pobranie całej bazy z góry
+
+~10 tys. obrazów to ok. 1,2 TB surowo, po deduplikacji warstw realnie 400–600 GB. Przy 178 GB
+wolnych na C: to nie wchodzi w grę. Odpada bez dalszej analizy.
+
+### Odrzucone: `docker pull` → skan → `docker rmi` po każdym obrazie
+
+Zużycie dysku jest ograniczone, ale ten wariant ma trzy wady:
+
+1. **Niszczy współdzielenie warstw.** `docker rmi` usuwa warstwy, do których nie ma już
+   referencji. `python:3.13` i `python:3.13-slim` dzielą warstwy bazowe Debiana — po usunięciu
+   pierwszego obrazu drugi ściąga je ponownie. Przy 10 tys. obrazów o silnie współdzielonych
+   bazach zwielokrotnia to transfer.
+2. **Wymaga demona Dockera** i montowania `/var/run/docker.sock` do samego skanowania.
+3. **Ściąga cały obraz**, choć Trivy potrzebuje wyłącznie metadanych pakietów.
+
+### Wybrane: `trivy image --image-src remote`
+
+Trivy sięga po warstwy prosto do rejestru, bez demona i bez lokalnego składowania obrazów.
+Dokumentacja: *„When scanning images from a container registry, Trivy processes each layer by
+**streaming**, loading only the necessary files for the scan into memory and discarding
+unnecessary files."*
+
+Trzy zalety rozstrzygające przy tej skali:
+
+- **Cache po warstwach działa między obrazami.** Trivy kluczuje cache po `image ID` i `layer ID`,
+  co *„enables faster scans of the same container image **or different images that share
+  layers**"*. Tysiące obrazów z Huba dzielą te same bazy `debian` i `alpine`, więc analiza bazy
+  wykonuje się raz. To dokładnie odwrotność wady wariantu z `docker rmi`.
+- **Brak demona.** Wolumen `/var/run/docker.sock` przestaje być potrzebny do skanowania.
+  Architektura DooD zostaje opisana w pracy jako model izolacji laboratorium, ale nie jest już
+  zależnością techniczną skanera.
+- **Ścieżka pobierania jest sterowalna.** `pull_ref` wskazujący `mirror.gcr.io` omija limit
+  200/6 h Docker Huba.
+
+### Krytyczne: zamrożenie bazy CVE na czas kampanii
+
+To ważniejsze niż samo zarządzanie dyskiem i łatwo to przeoczyć, bo nie objawia się błędem.
+
+**Baza podatności Trivy jest przebudowywana co 6 godzin i domyślnie aktualizowana przy każdym
+uruchomieniu.** Kampania trwająca kilkadziesiąt godzin oznacza więc, że obrazy skanowane
+pierwszego dnia są oceniane wobec **innej bazy CVE** niż skanowane trzeciego. Delta
+`distroless − standard` zaczyna wtedy częściowo odzwierciedlać **moment skanowania**, a nie
+stopień utwardzenia. Jest to systematyczny confounder unieważniający porównania z pkt 6 i 7.
+
+Obowiązkowa procedura — baza pobrana raz, potem zamrożona:
+
+```bash
+# raz, na starcie kampanii
+trivy image --cache-dir ./trivy_cache --download-db-only
+trivy image --cache-dir ./trivy_cache --download-java-db-only
+
+# archiwizacja do zalacznika i do odtworzenia wynikow
+cp ./trivy_cache/db/metadata.json ./trivy_cache/db/trivy.db  results/db_snapshot/
+
+# wszystkie 10 tys. skanow
+trivy image --cache-dir ./trivy_cache \
+            --skip-db-update --skip-java-db-update \
+            --image-src remote --scanners vuln --list-all-pkgs \
+            --format json --output <raport> <pull_ref>
+```
+
+W pracy trzeba podać **wersję bazy i datę jej pobrania** z `metadata.json`. Baza Java DB jest
+przebudowywana raz na dobę i ma znaczenie, bo `java` jest jedną z rodzin distroless.
+
+### Pozostałe decyzje operacyjne
+
+- **`--scanners vuln`.** Domyślnie Trivy włącza też skaner sekretów, który jest kosztowny
+  czasowo i nieistotny dla pytania badawczego. Wyłączamy go jawnie.
+- **`--list-all-pkgs`.** Konieczne dla osi funkcjonalności z pkt 7 (liczba pakietów, obecność
+  `bash`/`busybox`/`apt`/`apk`).
+- **Nie włączać `--sbom-sources`.** Jeśli Trivy znajdzie atestację SBOM, skanuje **SBOM zamiast
+  obrazu**. Część obrazów miałaby wtedy SBOM, a część nie, czyli byłyby mierzone **dwiema różnymi
+  metodami** — to zabija porównywalność. Flaga jest opcjonalna i eksperymentalna, więc wystarczy
+  jej nie dodawać, ale należy to zapisać jako świadomą decyzję.
+- **Zrównoleglenie — uwaga na konflikt z cache.** Dokumentacja zaleca `--cache-backend memory`
+  do równoległego uruchamiania, ale ten backend **nie utrwala wyników**, więc współdzielone
+  warstwy byłyby analizowane od nowa przy każdym obrazie, co likwiduje główną oszczędność.
+  Osobny `--cache-dir` per worker też nie jest rozwiązaniem, bo każdy katalog ściąga własną kopię
+  bazy (i psuje zamrożenie wersji, o ile nie skopiujemy tam przypiętej bazy). Realne opcje:
+  umiarkowana równoległość na jednym cache'u albo `--cache-backend redis` jako cache wspólny.
+  Nie zrównoleglać bezrefleksyjnie.
+- **`TMPDIR` na pojemnym dysku.** Duże pliki potrzebne do analizy (JAR-y, binaria) Trivy zapisuje
+  tymczasowo na dysk. Obrazy `java` będą generować szczyty zużycia. `TMPDIR` kierujemy na D:
+  i monitorujemy.
+- **Kompresja raportów w locie.** ~10 tys. raportów JSON to 15–20 GB; gzip natychmiast po skanie.
+
 ## Mikro-kroki
 
 Rola asystenta w tym planie: **drogowskaz**. Kod pisze student, commit po każdym kroku.
@@ -485,9 +577,11 @@ Rola asystenta w tym planie: **drogowskaz**. Kod pisze student, commit po każdy
 - [ ] **Krok 5 — matryca 10 tys.** Merge Hub + GCR, dedup po `layer_key`, kwoty miękkie,
   wyliczenie `paired` względem wariantu `standard` tej samej technologii.
   `feat(fetcher): matryca wielorejestrowa do 10 tys. skanow`
-- [ ] **Krok 6 — skaner.** Trivy na `pull_ref`, partie poniżej limitu, resume gdy JSON raportu
-  istnieje. Nie 10 tys. w jedną noc przez Hub.
-  `feat(scanner): skan pull_ref z resume i limitem partii`
+- [ ] **Krok 6 — skaner.** Trivy na `pull_ref` z `--image-src remote`, **baza CVE zamrożona
+  przed startem kampanii** (`--download-db-only`, potem `--skip-db-update`), partie poniżej
+  limitu, resume gdy JSON raportu istnieje. Szczegóły i uzasadnienie:
+  [Architektura kampanii skanowania](#architektura-kampanii-skanowania).
+  `feat(scanner): skan pull_ref z resume, image-src remote i zamrozona baza CVE`
 
 ### Cel akceptacji
 
@@ -528,9 +622,8 @@ Przy 10 tys. obrazów: ~15–20 GB surowego JSON-a (obecnie 75 raportów = ~130 
 `report_iojs.json` ma 12 MB). Dysk w chwili planowania: C: 178 GB wolnego, D: 715 GB;
 `reports/` 115 MB, `trivy_cache/` 2,3 GB.
 
-Alternatywa dla DooD: Trivy z `--image-src remote` sięga po warstwy prosto do rejestru i trzyma
-tylko wynik w cache fanal — wolumen `/var/run/docker.sock` przestaje być potrzebny do
-skanowania. Architekturę DooD zostawiamy opisaną w pracy jako model izolacji laboratorium.
+Wybór trybu pobierania obrazów (i wynikające z niego odejście od demona Dockera) jest omówiony
+w [Architekturze kampanii skanowania](#architektura-kampanii-skanowania).
 
 ## Stan repozytorium
 
