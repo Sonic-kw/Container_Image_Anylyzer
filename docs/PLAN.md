@@ -213,8 +213,9 @@ Fakty do zacytowania w rozdz. 2 (kryteria doboru próby):
   `nodejs` (14–26), `python3`, `dotnet` (przestarzały). Distroless dla `nginx`, `postgres`,
   `redis`, `mysql`, `php`, `ruby` **nie istnieje** — to ograniczenie metodologiczne do opisania
   w pracy, nie brak w kodzie.
-- Każde repo distroless ma **4 stabilne aliasy**: `latest`, `debug`, `nonroot`, `debug-nonroot`.
-  Pozostałe ~13 tys. tagów to identyfikatory commitów.
+- Każde repo distroless ma **4 stabilne aliasy**: `latest`, `debug`, `nonroot`, `debug-nonroot`
+  (pozostałe ~13 tys. tagów to identyfikatory commitów). Do badania bierzemy **tylko `latest`
+  i `nonroot`** — patrz Konsekwencja 2.
 - Rozmiary referencyjne `python`: `3.10.21-alpine` ~20 MB, `3.10.21-slim` ~45 MB,
   `latest` ~415 MB.
 
@@ -263,22 +264,19 @@ nowej informacji o podatnościach.
 wartość jako realizacja zalecenia NIST SP 800-190 o nieuruchamianiu jako root — ale należy go
 raportować jako **flagę boolowską przy obrazie**, a nie jako osobną obserwację w analizie CVE.
 
-### Konsekwencja 2 — rezygnacja z `debug` kosztuje punkt 7
+### Konsekwencja 2 — `debug` wyłączony ze zbioru (decyzja podjęta)
 
-Decyzja o ograniczeniu się do obrazów zatwierdzonych (`latest`, `nonroot`) jest słuszna dla
-punktu 6: warianty `debug` nie są rekomendowane produkcyjnie, więc nie reprezentują realnej
-metody utwardzania.
+**Decyzja:** warianty `debug` i `debug-nonroot` **nie wchodzą do badania**. Nie są rekomendowane
+produkcyjnie, więc nie reprezentują realnej metody utwardzania. Zatwierdzony zbiór distroless to
+`latest` + `nonroot`. Fetcher odfiltrowuje tagi `debug*` już na etapie enumeracji GCR (Krok 2),
+a nie dopiero w analizie.
 
-Ale ta jedna warstwa 740 kB to **najczystszy eksperyment kontrolowany w całym zbiorze danych**:
-identyczna baza, jedna zmienna, jedna warstwa. Jest to bezpośredni materiał dowodowy do punktu 7
-(kiedy utwardzanie zaczyna przeszkadzać). Bez niego balans bezpieczeństwo–funkcjonalność trzeba
-argumentować przez porównanie **różnych** baz, gdzie zmienia się kilkadziesiąt zmiennych naraz.
+Wiersze `debug` w tabeli powyżej zostają w dokumencie **wyłącznie jako dowód pomiarowy** — to
+one pokazują, że aliasy distroless redukują się do dwóch inwentarzy pakietów, co uzasadnia
+Konsekwencje 1 i 3. Nie są elementem próby.
 
-**Rekomendacja (do decyzji promotora):** `latest` + `nonroot` jako zatwierdzony zbiór
-produkcyjny dla punktu 6, a `debug` zachowany jako **jawnie oznaczona grupa referencyjna
-używana wyłącznie w punkcie 7**, wyłączona z głównego porównania. Koszt to ~12 dodatkowych
-skanów, korzyść to najmocniejszy pojedynczy wynik pracy. Kolumna `role` w matrycy
-(`production` / `reference`) rozdziela te dwa zastosowania bez mieszania ich we wnioskach.
+Skutkiem jest brak kontrastu wewnątrz identycznej bazy, więc punkt 7 opiera się na innym
+schemacie — patrz [Punkt 7: standard jako baseline](#punkt-7-standard-jako-baseline).
 
 ### Konsekwencja 3 — błąd w regule deduplikacji
 
@@ -300,10 +298,64 @@ Wersja obowiązująca używa **czterech klas** z flagami jako osobnymi wymiarami
 - `alpine` — `-alpine`, `-alpine3.24`; musl libc, busybox, apk
 - `distroless` — brak menedżera pakietów i powłoki
 
-Czynniki ortogonalne, mierzone niezależnie od klasy:
+Czynnik ortogonalny, mierzony niezależnie od klasy:
 
 - `nonroot` — flaga konfiguracyjna; **nie tworzy osobnej obserwacji CVE** (patrz Konsekwencja 1)
-- `debug` — obecność busyboksa; tylko grupa referencyjna dla punktu 7 (patrz Konsekwencja 2)
+
+Tagi `debug` i `debug-nonroot` są **odfiltrowywane na etapie pobierania** i nie mają
+reprezentacji w taksonomii (patrz Konsekwencja 2).
+
+## Punkt 7: standard jako baseline
+
+Wobec wyłączenia wariantów `debug` punkt 7 (balans bezpieczeństwo vs funkcjonalność runtime)
+realizowany jest przez **porównanie każdej klasy utwardzenia do klasy `standard` tej samej
+technologii**. `standard` jest kategorią referencyjną, a wynikiem są przyrosty względem niej.
+
+### Schemat
+
+Dla każdej technologii `family`, która ma wariant `standard` (na Hubie ma go zawsze) liczymy
+delty:
+
+```
+delta(slim)       = metryka(slim)       - metryka(standard)
+delta(alpine)     = metryka(alpine)     - metryka(standard)
+delta(distroless) = metryka(distroless) - metryka(standard)
+```
+
+To schemat **sparowany wewnątrz technologii**, co jest jego główną zaletą: `python:3.13-slim`
+porównujemy z `python:3.13`, nie ze średnią po wszystkich obrazach. Znika przez to wpływ tego,
+jaka technologia trafiła do próby, a kolumna `paired` wskazuje wiersze zdatne do analizy.
+
+### Dwie osie metryk
+
+Sam spadek liczby CVE nie odpowiada na pytanie „kiedy utwardzanie zaczyna przeszkadzać" —
+potrzebna jest druga oś. Obie pochodzą z tego samego skanu Trivy z `--list-all-pkgs`, bez
+uruchamiania kontenerów:
+
+- **Bezpieczeństwo:** liczba CVE (łącznie i w rozbiciu na severity wg CVSS v3.1), gęstość CVE
+  na pakiet, rozmiar obrazu.
+- **Funkcjonalność:** liczba pakietów w SBOM, obecność powłoki (`bash`, `sh`, `busybox`),
+  obecność menedżera pakietów (`apt`, `apk`), obecność narzędzi diagnostycznych.
+
+Wykres przyrostów na tych dwóch osiach (redukcja CVE vs utrata możliwości runtime) jest
+bezpośrednią odpowiedzią na punkt 7 i podstawą rekomendacji doboru baz.
+
+### Ograniczenie do zapisania w pracy
+
+Kontrast `distroless` vs `standard` zmienia jednocześnie bazę systemową, implementację libc
+(glibc vs musl przy alpine), zestaw pakietów i obecność powłoki. Zmierzona delta jest więc
+**zagregowanym efektem całego podejścia do utwardzania**, a nie efektem jednego czynnika.
+
+Trzeba to napisać wprost i nie twierdzić, że wyizolowano wpływ pojedynczej zmiennej (np. samej
+obecności powłoki) — do takiego wniosku potrzebny byłby kontrast w obrębie identycznej bazy,
+którego świadomie nie uwzględniamy. Dla celu pracy, czyli **rekomendacji doboru baz systemowych**,
+efekt zagregowany jest właściwą jednostką: inżynier wybiera cały obraz bazowy, nie pojedynczą
+warstwę.
+
+Dodatkowe zawężenie: distroless istnieje tylko dla ~5 rodzin (`python`, `nodejs`, `java`, `cc`,
+`static`), więc trójkąt `standard`–`slim`/`alpine`–`distroless` domyka się dla kilku technologii.
+Dla pozostałych porównanie sięga tylko `slim` i `alpine`. Liczebność obu podzbiorów raportujemy
+osobno.
 
 > Wcześniejszy plan proponował skalę porządkową `H0`–`H4` (STANDARD / SLIM / ALPINE /
 > DISTROLESS / STATIC) z `has_shell` i `nonroot` jako czynnikami ortogonalnymi. Został
@@ -321,9 +373,8 @@ Czynniki ortogonalne, mierzone niezależnie od klasy:
 | `registry` | `hub` / `gcr` / `mirror` |
 | `mirror_ok` | czy lustro miało ten obraz (sondowane, nie zakładane) |
 | `nonroot` | flaga konfiguracyjna |
-| `role` | `production` / `reference` — rozdziela pkt 6 od pkt 7 |
 | `layer_key` | klucz deduplikacji dla analizy CVE |
-| `paired` | czy ta sama `family` ma ≥2 klasy |
+| `paired` | czy `family` ma wariant `standard` + ≥1 klasę utwardzoną (warunek analizy z pkt 7) |
 
 ### Przepływ danych
 
@@ -385,8 +436,10 @@ Rola asystenta w tym planie: **drogowskaz**. Kod pisze student, commit po każdy
   `feat(fetcher): paginowany katalog Hub z kilku zapytan`
 - [ ] **Krok 2 — katalog GCR distroless.** Lista obrazów i dozwolonych tagów z README; API GCR
   tylko potwierdza istnienie. **Nie iterować całego `manifest`.** Filtr odrzuca: końcówki
-  `.sig` / `.att`, prefix `update-available-`, tagi będące samym digestem / `sha256-...`.
-  `feat(fetcher): enumeracja GCR distroless z filtrem tagow pomocniczych`
+  `.sig` / `.att`, prefix `update-available-`, tagi będące samym digestem / `sha256-...`,
+  oraz **tagi `debug` i `debug-nonroot`** (decyzja z Konsekwencji 2). Zostają wyłącznie
+  `latest` i `nonroot`.
+  `feat(fetcher): enumeracja GCR distroless z filtrem tagow pomocniczych i debug`
 - [ ] **Krok 3 — tagi Hub + cache + backoff.** Token Hub tylko do API, **nie commitować**.
   `feat(fetcher): tagi Hub z cache i backoff przy 429`
 - [ ] **Krok 4 — klasyfikacja + `pull_ref` + sonda lustra.** Dla każdego repo sprawdzić
@@ -394,7 +447,7 @@ Rola asystenta w tym planie: **drogowskaz**. Kod pisze student, commit po każdy
   **Nie** stosować bezwarunkowego przepisywania URL (patrz przypadek `openjdk`).
   `feat(fetcher): mapowanie pull_ref z sonda dostepnosci lustra`
 - [ ] **Krok 5 — matryca 10 tys.** Merge Hub + GCR, dedup po `layer_key`, kwoty miękkie,
-  `paired`, `role`.
+  wyliczenie `paired` względem wariantu `standard` tej samej technologii.
   `feat(fetcher): matryca wielorejestrowa do 10 tys. skanow`
 - [ ] **Krok 6 — skaner.** Trivy na `pull_ref`, partie poniżej limitu, resume gdy JSON raportu
   istnieje. Nie 10 tys. w jedną noc przez Hub.
@@ -483,7 +536,8 @@ for r in static base base-nossl cc java-base java17 java21 java25 \
     "https://gcr.io/v2/distroless/$r-debian13/manifests/latest"           # 200
 done
 
-# warstwy wariantow distroless (latest vs nonroot vs debug)
+# warstwy wariantow distroless: dowod, ze 4 aliasy = 2 inwentarze pakietow
+# (warianty debug sluza tu wylacznie jako dowod, do proby nie wchodza)
 for t in latest nonroot debug debug-nonroot; do
   curl -s -H "$A" "https://gcr.io/v2/distroless/python3-debian12/manifests/$t"
 done
