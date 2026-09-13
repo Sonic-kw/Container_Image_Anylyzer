@@ -535,20 +535,51 @@ opisywanie DooD jako „modelu izolacji", którym nigdy nie był.
 Zamiast gniazda Dockera potrzebne są dwie rzeczy:
 
 - **Sieć wychodząca** do `mirror.gcr.io`, `gcr.io`, Docker Huba i GHCR (baza Trivy).
-- **Wolumeny na dane trwałe:** `trivy_cache/`, `reports/`, `results/` i `lab.db`. To jest
-  **krytyczne**, nie kosmetyczne: gdyby cache siedział w warstwie zapisywalnej kontenera, każde
-  jego odtworzenie kasowałoby zarówno przypiętą bazę CVE (rozjeżdżając
-  [zamrożenie wersji](#krytyczne-zamrożenie-bazy-cve-na-czas-kampanii)), jak i cache warstw,
-  czyli główną oszczędność czasu. Kolejka SQLite w kontenerze oznaczałaby też utratę postępu
-  kampanii.
+- **Trwałe montowanie** katalogów `trivy_cache/`, `reports/`, `results/` i pliku `lab.db`.
 
-Uprawnienia kontenera schodzą więc do zwykłego procesu z dostępem do sieci i kilku wolumenów —
-bez `--privileged`, bez montowania gniazda, bez potrzeby roota.
+**To nie jest PVC.** `PersistentVolumeClaim` to obiekt Kubernetesa; tutaj działamy na czystym
+Dockerze na stacji roboczej, więc odpowiednikiem jest **bind mount** (`-v <host>:<kontener>`)
+albo named volume. Kubernetes nie wchodzi do projektu — patrz
+[Czego nie dodawać](#czego-nie-dodawać).
 
-`Dockerfile` wymaga przy tym domknięcia braku `COPY` źródeł (patrz
-[Dług techniczny](#dług-techniczny-w-istniejącym-kodzie)) — dziś kod działa wyłącznie
-z montowania katalogu roboczego, co jest wygodne przy rozwoju, ale nie daje odtwarzalnego obrazu
-narzędzia do opisania w pracy.
+Co ważne, **ten wymóg jest już spełniony**: kod działa dziś wyłącznie z montowania katalogu
+roboczego, a wszystkie cztery ścieżki leżą w tym katalogu. Nie ma tu nic do dobudowania,
+wystarczy tego montowania nie usuwać. Trwałość jest krytyczna, nie kosmetyczna: gdyby cache
+siedział w warstwie zapisywalnej kontenera, jego odtworzenie kasowałoby zarówno przypiętą bazę
+CVE (rozjeżdżając [zamrożenie wersji](#krytyczne-zamrożenie-bazy-cve-na-czas-kampanii)), jak
+i cache warstw, czyli główną oszczędność czasu, a kolejka SQLite traciłaby postęp kampanii.
+
+Uprawnienia kontenera schodzą więc do zwykłego procesu z dostępem do sieci i kilku montowań —
+bez `--privileged`, bez gniazda Dockera, bez potrzeby roota.
+
+#### Zmiany w `Dockerfile`
+
+Stan obecny i co z nim zrobić, w kolejności ważności:
+
+1. **Dodać `--image-src remote` do wywołania Trivy** (to zmiana w kodzie, nie w `Dockerfile`,
+   ale jest źródłem problemu). Domyślna kolejność źródeł w Trivy to
+   `docker,containerd,podman,remote`, więc **demon hosta jest odpytywany pierwszy**. To dokładnie
+   dlatego obrazy badane lądowały w lokalnym storage Dockera i zaśmiecały komputer. Jawne
+   `--image-src remote` wycina tę ścieżkę.
+2. **Usunąć `RUN apt-get install -y docker.io`.** Pakiet dostarcza Docker CLI, którego
+   **nic nie używa** — `scanner.py` wywołuje wyłącznie `trivy`, nigdy `docker`. Był potrzebny
+   tylko przy założeniu DooD. Zysk: mniejszy obraz narzędzia i brak klienta Dockera w środku, co
+   jest spójne z tematem pracy.
+3. **Zweryfikować wersję Trivy przed startem kampanii.** Obraz przypina `v0.45.1` (2023) —
+   przypinanie jest dobre i zostaje, ale ta wersja jest stara. Flaga `--image-src` w niej
+   **istnieje** (sprawdzone w źródle: `pkg/flag/image_flags.go`, linia 53), więc nie ma blokera
+   architektonicznego. Ryzyko leży w bazie: `pkg/db/db.go` zawiera kontrolę schematu, która
+   **przerywa działanie, gdy serwowana baza ma nowszy schemat** niż obsługuje klient. Trzeba to
+   sprawdzić jednym `--download-db-only` *przed* kampanią, bo odkrycie problemu po kilku tysiącach
+   skanów byłoby kosztowne. Jeśli baza nie wstaje — podbić Trivy i **zapisać w pracy użytą wersję**.
+4. **Dodać `COPY` źródeł** — potrzebne, ale **nie pilne**. Dziś obraz kopiuje tylko
+   `requirements.txt`, a `CMD ["python", "scanner.py"]` działa wyłącznie dzięki montowaniu.
+   Do rozwoju (Kroki 1–6) montowanie jest wygodniejsze, bo nie wymaga przebudowy po każdej
+   zmianie. `COPY` i bind mount **nie kolidują** — montowanie przesłania skopiowaną warstwę, więc
+   można mieć oba: `COPY` daje odtwarzalny artefakt do opisania w pracy, mount zostaje trybem
+   roboczym. Termin: przed pisaniem rozdziału o narzędziu, nie przed Krokiem 1.
+5. **Przypiąć wersje w `requirements.txt`** i dodać `pyarrow` (patrz
+   [Dług techniczny](#dług-techniczny-w-istniejącym-kodzie)).
 
 ### Krytyczne: zamrożenie bazy CVE na czas kampanii
 
@@ -663,8 +694,12 @@ Zidentyfikowany przy rekonesansie, do domknięcia przy refaktoryzacji:
   przyrostowy do Parquet.
 - Skan musi używać `--list-all-pkgs`, co da liczbę pakietów oraz wykrycie
   `bash`/`busybox`/`apt`/`apk` — to metryka funkcjonalności do pkt 7.
-- `Dockerfile` nie zawiera `COPY scanner.py .` — kod działa wyłącznie z montowania.
+- `Dockerfile` nie zawiera `COPY` źródeł — kod działa wyłącznie z montowania. Instaluje też
+  `docker.io`, którego nic nie używa. Szczegóły i priorytety:
+  [Zmiany w `Dockerfile`](#zmiany-w-dockerfile).
 - `requirements.txt` bez przypiętych wersji; do przypięcia wszystkie, do dołożenia `pyarrow`.
+- `run_trivy_scan` nie przekazuje `--image-src remote`, więc Trivy odpytuje najpierw demona hosta
+  i ściąga obrazy do lokalnego storage Dockera — źródło zaśmiecania maszyny.
 
 ### Rozmiar danych i dysk
 
