@@ -385,6 +385,53 @@ Dodatkowe zawężenie: distroless istnieje tylko dla ~5 rodzin (`python`, `nodej
 Dla pozostałych porównanie sięga tylko `slim` i `alpine`. Liczebność obu podzbiorów raportujemy
 osobno.
 
+## Pilotaż weryfikujący metodykę (13.09.2026)
+
+Pięć obrazów przeskanowanych Trivy `v0.74.0` z zamrożoną bazą, `--image-src remote`,
+`--scanners vuln --list-all-pkgs`, **bez demona Dockera**. Cel: sprawdzić architekturę i schemat
+delt, zanim uruchomimy 10 tys. skanów.
+
+| Obraz | OS wg Trivy | CVE | Pakiety |
+| --- | --- | --- | --- |
+| `python:3.13` (standard) | debian 13.6 | 3612 | 488 |
+| `python:3.13-slim` | debian 13.6 | 181 | 106 |
+| `distroless/python3-debian13` | debian 13.6 | **151** | 38 |
+| `distroless/python3-debian12` | debian 12.13 | **258** | 34 |
+| `alpine:latest` | alpine 3.22 | 20 | 16 |
+
+### Co pilotaż potwierdził
+
+- **Architektura działa.** Skany przez `mirror.gcr.io` i `gcr.io/distroless` wykonały się bez
+  demona Dockera, wyłącznie po HTTPS. Czasy 2–7 s na obraz przy ciepłym cache warstw, więc
+  10 tys. skanów jest realne w godzinach, nie dniach.
+- **`--skip-db-update` działa** — kampania na zamrożonej bazie jest wykonalna.
+- **Obie osie z jednego skanu.** `--list-all-pkgs` daje liczbę pakietów obok liczby CVE, czyli
+  metryka funkcjonalności z pkt 7 nie wymaga uruchamiania kontenerów.
+- **Porządek delt jest monotoniczny — ale tylko na tej samej bazie:** 3612 → 181 → 151 CVE przy
+  488 → 106 → 38 pakietach.
+
+### Wymóg, który z tego wynika: dopasowanie linii Debiana
+
+Wariant `-debian12` **łamie porządek**: ma 258 CVE, czyli **więcej niż `slim`** (181), mimo
+**trzykrotnie mniejszej liczby pakietów** (34 vs 106). Powód nie jest związany z utwardzaniem —
+to inna, starsza baza (debian 12.13 vs 13.6).
+
+**Wniosek dla fetchera:** przy parowaniu trzeba dobierać **linię distroless zgodną z bazą
+wariantu z Huba**. Dla `python:3.13` (debian 13.6) partnerem jest `python3-debian13`, nie
+`python3-debian12`. Wrzucenie obu linii do jednej klasy `distroless` bez kontroli wersji bazy
+odwróciłoby wniosek pkt 6 — distroless wypadłby gorzej od `slim`.
+
+Konkretnie: albo ograniczamy distroless do linii zgodnej z bazą partnera, albo wprowadzamy wersję
+bazy jako **jawny czynnik** w modelu. Pierwsze jest prostsze i wystarczające.
+
+### Wynik uboczny wart opisania w pracy
+
+**Mniej pakietów nie znaczy mniej CVE.** `distroless-debian12` ma 34 pakiety i 258 CVE, a
+`python:3.13-slim` 106 pakietów i 181 CVE. Świeżość bazy systemowej dominuje nad samą liczbą
+komponentów. To osłabia potoczne założenie „mniejszy obraz = bezpieczniejszy" i jest dobrym
+materiałem do rekomendacji z pkt 7: liczy się nie tylko *ile* pakietów, ale *jak świeże* są ich
+wersje.
+
 > Wcześniejszy plan proponował skalę porządkową `H0`–`H4` (STANDARD / SLIM / ALPINE /
 > DISTROLESS / STATIC) z `has_shell` i `nonroot` jako czynnikami ortogonalnymi. Został
 > zastąpiony wariantem 4-klasowym. Jeśli wrócimy do pięciostopniowej skali, trzeba to
@@ -565,13 +612,15 @@ Stan obecny i co z nim zrobić, w kolejności ważności:
    **nic nie używa** — `scanner.py` wywołuje wyłącznie `trivy`, nigdy `docker`. Był potrzebny
    tylko przy założeniu DooD. Zysk: mniejszy obraz narzędzia i brak klienta Dockera w środku, co
    jest spójne z tematem pracy.
-3. **Zweryfikować wersję Trivy przed startem kampanii.** Obraz przypina `v0.45.1` (2023) —
-   przypinanie jest dobre i zostaje, ale ta wersja jest stara. Flaga `--image-src` w niej
-   **istnieje** (sprawdzone w źródle: `pkg/flag/image_flags.go`, linia 53), więc nie ma blokera
-   architektonicznego. Ryzyko leży w bazie: `pkg/db/db.go` zawiera kontrolę schematu, która
-   **przerywa działanie, gdy serwowana baza ma nowszy schemat** niż obsługuje klient. Trzeba to
-   sprawdzić jednym `--download-db-only` *przed* kampanią, bo odkrycie problemu po kilku tysiącach
-   skanów byłoby kosztowne. Jeśli baza nie wstaje — podbić Trivy i **zapisać w pracy użytą wersję**.
+3. **Podbić wersję Trivy — `v0.45.1` nie jest już do pobrania.** To nie jest kwestia „starej,
+   ale działającej" wersji: **aquasecurity/trivy usuwa binaria starych wydań z GitHub Releases.**
+   Tagi gita zostają (`refs/tags/v0.45.1` istnieje), ale plików nie ma. Z 92 opublikowanych wydań
+   pozostały `v0.0.1`–`v0.0.5` oraz dopiero `v0.69.2` i nowsze — **cała seria 0.4x zniknęła**.
+   `install.sh` zwraca w tej sytuacji kod `1`, więc `docker build` **padał** na tej warstwie
+   (dobra wiadomość: głośno, nie po cichu obrazem bez skanera). Przypięto `v0.74.0`, zweryfikowane
+   jako instalowalne i działające. Do `RUN` dodano `trivy --version`, żeby przyszłe usunięcie
+   wydania było widoczne od razu przy budowaniu. **Użytą wersję trzeba zapisać w pracy**, bo
+   wpływa na wyniki skanów.
 4. **Dodać `COPY` źródeł** — potrzebne, ale **nie pilne**. Dziś obraz kopiuje tylko
    `requirements.txt`, a `CMD ["python", "scanner.py"]` działa wyłącznie dzięki montowaniu.
    Do rozwoju (Kroki 1–6) montowanie jest wygodniejsze, bo nie wymaga przebudowy po każdej
@@ -585,11 +634,13 @@ Stan obecny i co z nim zrobić, w kolejności ważności:
 
 To ważniejsze niż samo zarządzanie dyskiem i łatwo to przeoczyć, bo nie objawia się błędem.
 
-**Baza podatności Trivy jest przebudowywana co 6 godzin i domyślnie aktualizowana przy każdym
-uruchomieniu.** Kampania trwająca kilkadziesiąt godzin oznacza więc, że obrazy skanowane
-pierwszego dnia są oceniane wobec **innej bazy CVE** niż skanowane trzeciego. Delta
-`distroless − standard` zaczyna wtedy częściowo odzwierciedlać **moment skanowania**, a nie
-stopień utwardzenia. Jest to systematyczny confounder unieważniający porównania z pkt 6 i 7.
+**Baza podatności Trivy jest przebudowywana co 6 godzin, a klient odświeża ją samoczynnie
+zgodnie z polem `NextUpdate` w `metadata.json`** — zmierzone: `UpdatedAt 2026-09-13T19:03Z`,
+`NextUpdate 2026-09-14T19:03Z`, czyli **co ~24 h**, nie co 6 h. Kampania trwająca kilka dni
+oznacza więc, że obrazy skanowane pierwszego dnia są oceniane wobec **innej bazy CVE** niż
+skanowane trzeciego. Delta `distroless − standard` zaczyna wtedy częściowo odzwierciedlać
+**moment skanowania**, a nie stopień utwardzenia. Jest to systematyczny confounder unieważniający
+porównania z pkt 6 i 7 — niezależnie od tego, czy odświeżanie jest co 6, czy co 24 godziny.
 
 Obowiązkowa procedura — baza pobrana raz, potem zamrożona:
 
@@ -610,6 +661,10 @@ trivy image --cache-dir ./trivy_cache \
 
 W pracy trzeba podać **wersję bazy i datę jej pobrania** z `metadata.json`. Baza Java DB jest
 przebudowywana raz na dobę i ma znaczenie, bo `java` jest jedną z rodzin distroless.
+
+Uwaga na rozmiar: pobranie to ~113 MiB skompresowane, ale **`trivy.db` zajmuje ~1,3 GB**
+na dysku. Do załącznika pracy nie nadaje się sam plik — archiwizujemy skompresowany artefakt
+albo zapisujemy jego digest wraz z `metadata.json`.
 
 ### Pozostałe decyzje operacyjne
 
