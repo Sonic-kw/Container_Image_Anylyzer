@@ -20,6 +20,9 @@ def get_popular_images(limit=100):
 def run_trivy_scan(image_name, output_file):
     command = [
         "trivy", "image",
+        # Bez tego Trivy odpytuje najpierw demona hosta i sciaga obrazy
+        # do lokalnego storage Dockera.
+        "--image-src", "remote",
         "--format", "json",
         "--output", f"/app/reports/{output_file}",
         "--cache-dir", "/app/trivy_cache",

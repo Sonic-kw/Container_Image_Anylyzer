@@ -45,8 +45,10 @@ Skaner jest **narzędziem badawczym**, nie produktem. Ciężar pracy leży w pun
 
 ### Stos technologiczny
 
-- **Architektura:** izolowane laboratorium w modelu Docker-out-of-Docker (DooD),
-  mapowanie `/var/run/docker.sock`
+- **Architektura:** narzędzia (Trivy, Python, zależności) zamknięte w kontenerze, żeby nie
+  instalować ich na maszynie hosta. Pierwotnie w modelu Docker-out-of-Docker z mapowaniem
+  `/var/run/docker.sock`; przy `--image-src remote` montowanie gniazda przestaje być potrzebne —
+  patrz [Kontener orkiestrujący](#kontener-orkiestrujący-po-co-był-dood-i-co-z-niego-zostaje)
 - **Język:** Python — `requests`, `pandas`, `tqdm`, `subprocess`
 - **Skaner:** Aqua Security Trivy (wyniki JSON)
 - **Źródła:** API Docker Hub oraz Google Container Registry
@@ -213,8 +215,9 @@ Fakty do zacytowania w rozdz. 2 (kryteria doboru próby):
   `nodejs` (14–26), `python3`, `dotnet` (przestarzały). Distroless dla `nginx`, `postgres`,
   `redis`, `mysql`, `php`, `ruby` **nie istnieje** — to ograniczenie metodologiczne do opisania
   w pracy, nie brak w kodzie.
-- Każde repo distroless ma **4 stabilne aliasy**: `latest`, `debug`, `nonroot`, `debug-nonroot`.
-  Pozostałe ~13 tys. tagów to identyfikatory commitów.
+- Każde repo distroless ma **4 stabilne aliasy**: `latest`, `debug`, `nonroot`, `debug-nonroot`
+  (pozostałe ~13 tys. tagów to identyfikatory commitów). Do badania bierzemy **wyłącznie
+  `latest`** — patrz Konsekwencje 1 i 2.
 - Rozmiary referencyjne `python`: `3.10.21-alpine` ~20 MB, `3.10.21-slim` ~45 MB,
   `latest` ~415 MB.
 
@@ -253,39 +256,60 @@ bierzemy z `tag_last_pushed` z API, a dla distroless trzeba albo zrezygnować z 
 albo wziąć datę z metadanych rejestru (`timeUploaded`), nie z configu. Do zapisania jako
 ograniczenie w rozdz. 5.
 
-### Konsekwencja 1 — `latest` i `nonroot` dadzą identyczny wynik Trivy
+### Konsekwencja 1 — skanujemy tylko `latest` (decyzja podjęta)
 
-Identyczne warstwy to identyczny inwentarz pakietów, czyli **identyczny zbiór CVE**. Trzymanie
-obu jako pełnoprawnych wierszy matrycy podwaja liczebność distroless, nie wnosząc **żadnej**
-nowej informacji o podatnościach.
+Identyczne warstwy to identyczny inwentarz pakietów, czyli **identyczny zbiór CVE**. Skanowanie
+obu wariantów byłoby więc pobraniem tej samej informacji dwa razy.
 
-`nonroot` jest wymiarem **utwardzania konfiguracji**, nie inwentarza pakietów. Ma realną
-wartość jako realizacja zalecenia NIST SP 800-190 o nieuruchamianiu jako root — ale należy go
-raportować jako **flagę boolowską przy obrazie**, a nie jako osobną obserwację w analizie CVE.
+**Decyzja:** z każdego repozytorium distroless bierzemy **wyłącznie tag `latest`** — jeden wiersz
+matrycy na repozytorium. `nonroot` nie jest skanowany.
 
-### Konsekwencja 2 — rezygnacja z `debug` kosztuje punkt 7
+**Dlaczego `latest`, a nie `nonroot`.** Wybór nie jest dowolny, mimo że dla CVE oba są
+równoważne. Obrazy z Huba w klasach `standard`, `slim` i `alpine` domyślnie działają jako root.
+Gdybyśmy jako reprezentanta distroless wzięli `nonroot` (`User = "65532"`), do delty
+`distroless − standard` wszedłby **dodatkowy czynnik: zmiana użytkownika**, którego pozostałe
+klasy nie mają. `latest` ma `User = "0"`, czyli identycznie jak warianty z Huba, więc uprzywilejowanie
+pozostaje **stałą w całym porównaniu** i delta mierzy wyłącznie różnice w userlandzie i zestawie
+pakietów. To eliminuje confounder, którego inaczej trzeba by tłumaczyć w rozdz. 6.
 
-Decyzja o ograniczeniu się do obrazów zatwierdzonych (`latest`, `nonroot`) jest słuszna dla
-punktu 6: warianty `debug` nie są rekomendowane produkcyjnie, więc nie reprezentują realnej
-metody utwardzania.
+**`nonroot` nadal jest treścią pracy — tylko nie obserwacją.** Jego właściwości są udowodnione
+inspekcją manifestów, bez żadnego skanu: identyczne warstwy, `User = "0"` vs `User = "65532"`.
+Wynika z tego wniosek wart osobnego akapitu w punkcie 7: **utwardzenie użytkownika jest w
+distroless darmowe** — realizuje zalecenie NIST SP 800-190 o nieuruchamianiu jako root przy
+zerowej zmianie liczby CVE i zerowej utracie funkcjonalności. To jedyny punkt w całym badaniu,
+gdzie utwardzanie nic nie kosztuje, co dobrze kontrastuje z pozostałymi klasami, gdzie redukcja
+CVE zawsze wiąże się z utratą możliwości runtime.
 
-Ale ta jedna warstwa 740 kB to **najczystszy eksperyment kontrolowany w całym zbiorze danych**:
-identyczna baza, jedna zmienna, jedna warstwa. Jest to bezpośredni materiał dowodowy do punktu 7
-(kiedy utwardzanie zaczyna przeszkadzać). Bez niego balans bezpieczeństwo–funkcjonalność trzeba
-argumentować przez porównanie **różnych** baz, gdzie zmienia się kilkadziesiąt zmiennych naraz.
+W matrycy odnotowujemy to kolumną `nonroot_available` (własność repozytorium), a nie osobnym
+wierszem.
 
-**Rekomendacja (do decyzji promotora):** `latest` + `nonroot` jako zatwierdzony zbiór
-produkcyjny dla punktu 6, a `debug` zachowany jako **jawnie oznaczona grupa referencyjna
-używana wyłącznie w punkcie 7**, wyłączona z głównego porównania. Koszt to ~12 dodatkowych
-skanów, korzyść to najmocniejszy pojedynczy wynik pracy. Kolumna `role` w matrycy
-(`production` / `reference`) rozdziela te dwa zastosowania bez mieszania ich we wnioskach.
+### Konsekwencja 2 — `debug` wyłączony ze zbioru (decyzja podjęta)
+
+**Decyzja:** warianty `debug` i `debug-nonroot` **nie wchodzą do badania**. Nie są rekomendowane
+produkcyjnie, więc nie reprezentują realnej metody utwardzania.
+
+Łącznie z Konsekwencją 1 daje to jedną regułę dla całego GCR: **z czterech aliasów zostaje
+wyłącznie `latest`**. Fetcher odfiltrowuje `debug`, `debug-nonroot` i `nonroot` już na etapie
+enumeracji GCR (Krok 2), a nie dopiero w analizie.
+
+Wiersze `debug` w tabeli powyżej zostają w dokumencie **wyłącznie jako dowód pomiarowy** — to
+one pokazują, że aliasy distroless redukują się do dwóch inwentarzy pakietów, co uzasadnia
+Konsekwencje 1 i 3. Nie są elementem próby.
+
+Skutkiem jest brak kontrastu wewnątrz identycznej bazy, więc punkt 7 opiera się na innym
+schemacie — patrz [Punkt 7: standard jako baseline](#punkt-7-standard-jako-baseline).
 
 ### Konsekwencja 3 — błąd w regule deduplikacji
 
-Poprzedni plan deduplikował **po digescie manifestu**. To nie zadziała: `latest` i `nonroot`
-mają **różne digesty manifestu i identyczne warstwy**. Deduplikacja po digescie ich nie sklei,
-więc N spuchnie o duplikaty profili CVE — dokładnie ta pseudoreplikacja, której plan miał
-zapobiegać.
+Poprzedni plan deduplikował **po digescie manifestu**. Para `latest` / `nonroot` pokazuje, że to
+niewystarczające: mają **różne digesty manifestu i identyczne warstwy**, więc deduplikacja po
+digescie ich nie sklei i N spuchnie o duplikaty profili CVE — dokładnie ta pseudoreplikacja,
+której plan miał zapobiegać.
+
+W samym GCR problem znika przez decyzję z Konsekwencji 1 (bierzemy tylko `latest`), ale reguła
+zostaje potrzebna **po stronie Huba**, gdzie skala jest znacznie większa: aliasy w rodzaju
+`3.10-alpine`, `3.10.21-alpine` i `3.10.21-alpine3.24` wskazują ten sam obraz, a część tagów
+różni się wyłącznie metadanymi.
 
 **Poprawka:** kluczem deduplikacji dla analizy CVE musi być **lista warstw** (albo `diff_ids`
 z rootfs), nie digest manifestu. Digest manifestu zostaje jako identyfikator artefaktu do
@@ -300,10 +324,113 @@ Wersja obowiązująca używa **czterech klas** z flagami jako osobnymi wymiarami
 - `alpine` — `-alpine`, `-alpine3.24`; musl libc, busybox, apk
 - `distroless` — brak menedżera pakietów i powłoki
 
-Czynniki ortogonalne, mierzone niezależnie od klasy:
+Taksonomia nie ma czynników ortogonalnych — klasa jednoznacznie opisuje obraz. Uprzywilejowanie
+jest **stałą całego badania** (wszystkie skanowane obrazy działają jako root, `User = "0"`), co
+jest celowe: dzięki temu delty z punktu 7 nie są zanieczyszczone zmianą użytkownika
+(patrz Konsekwencja 1).
 
-- `nonroot` — flaga konfiguracyjna; **nie tworzy osobnej obserwacji CVE** (patrz Konsekwencja 1)
-- `debug` — obecność busyboksa; tylko grupa referencyjna dla punktu 7 (patrz Konsekwencja 2)
+Aliasy `debug`, `debug-nonroot` i `nonroot` są **odfiltrowywane na etapie pobierania** i nie mają
+reprezentacji w taksonomii (Konsekwencje 1 i 2). Dostępność wariantu `nonroot` jest zapisywana
+jako `nonroot_available` i omawiana jakościowo, bez skanu.
+
+## Punkt 7: standard jako baseline
+
+Wobec wyłączenia wariantów `debug` punkt 7 (balans bezpieczeństwo vs funkcjonalność runtime)
+realizowany jest przez **porównanie każdej klasy utwardzenia do klasy `standard` tej samej
+technologii**. `standard` jest kategorią referencyjną, a wynikiem są przyrosty względem niej.
+
+### Schemat
+
+Dla każdej technologii `family`, która ma wariant `standard` (na Hubie ma go zawsze) liczymy
+delty:
+
+```
+delta(slim)       = metryka(slim)       - metryka(standard)
+delta(alpine)     = metryka(alpine)     - metryka(standard)
+delta(distroless) = metryka(distroless) - metryka(standard)
+```
+
+To schemat **sparowany wewnątrz technologii**, co jest jego główną zaletą: `python:3.13-slim`
+porównujemy z `python:3.13`, nie ze średnią po wszystkich obrazach. Znika przez to wpływ tego,
+jaka technologia trafiła do próby, a kolumna `paired` wskazuje wiersze zdatne do analizy.
+
+### Dwie osie metryk
+
+Sam spadek liczby CVE nie odpowiada na pytanie „kiedy utwardzanie zaczyna przeszkadzać" —
+potrzebna jest druga oś. Obie pochodzą z tego samego skanu Trivy z `--list-all-pkgs`, bez
+uruchamiania kontenerów:
+
+- **Bezpieczeństwo:** liczba CVE (łącznie i w rozbiciu na severity wg CVSS v3.1), gęstość CVE
+  na pakiet, rozmiar obrazu.
+- **Funkcjonalność:** liczba pakietów w SBOM, obecność powłoki (`bash`, `sh`, `busybox`),
+  obecność menedżera pakietów (`apt`, `apk`), obecność narzędzi diagnostycznych.
+
+Wykres przyrostów na tych dwóch osiach (redukcja CVE vs utrata możliwości runtime) jest
+bezpośrednią odpowiedzią na punkt 7 i podstawą rekomendacji doboru baz.
+
+### Ograniczenie do zapisania w pracy
+
+Kontrast `distroless` vs `standard` zmienia jednocześnie bazę systemową, implementację libc
+(glibc vs musl przy alpine), zestaw pakietów i obecność powłoki. Zmierzona delta jest więc
+**zagregowanym efektem całego podejścia do utwardzania**, a nie efektem jednego czynnika.
+
+Trzeba to napisać wprost i nie twierdzić, że wyizolowano wpływ pojedynczej zmiennej (np. samej
+obecności powłoki) — do takiego wniosku potrzebny byłby kontrast w obrębie identycznej bazy,
+którego świadomie nie uwzględniamy. Dla celu pracy, czyli **rekomendacji doboru baz systemowych**,
+efekt zagregowany jest właściwą jednostką: inżynier wybiera cały obraz bazowy, nie pojedynczą
+warstwę.
+
+Dodatkowe zawężenie: distroless istnieje tylko dla ~5 rodzin (`python`, `nodejs`, `java`, `cc`,
+`static`), więc trójkąt `standard`–`slim`/`alpine`–`distroless` domyka się dla kilku technologii.
+Dla pozostałych porównanie sięga tylko `slim` i `alpine`. Liczebność obu podzbiorów raportujemy
+osobno.
+
+## Pilotaż weryfikujący metodykę (13.09.2026)
+
+Pięć obrazów przeskanowanych Trivy `v0.74.0` z zamrożoną bazą, `--image-src remote`,
+`--scanners vuln --list-all-pkgs`, **bez demona Dockera**. Cel: sprawdzić architekturę i schemat
+delt, zanim uruchomimy 10 tys. skanów.
+
+| Obraz | OS wg Trivy | CVE | Pakiety |
+| --- | --- | --- | --- |
+| `python:3.13` (standard) | debian 13.6 | 3612 | 488 |
+| `python:3.13-slim` | debian 13.6 | 181 | 106 |
+| `distroless/python3-debian13` | debian 13.6 | **151** | 38 |
+| `distroless/python3-debian12` | debian 12.13 | **258** | 34 |
+| `alpine:latest` | alpine 3.22 | 20 | 16 |
+
+### Co pilotaż potwierdził
+
+- **Architektura działa.** Skany przez `mirror.gcr.io` i `gcr.io/distroless` wykonały się bez
+  demona Dockera, wyłącznie po HTTPS. Czasy 2–7 s na obraz przy ciepłym cache warstw, więc
+  10 tys. skanów jest realne w godzinach, nie dniach.
+- **`--skip-db-update` działa** — kampania na zamrożonej bazie jest wykonalna.
+- **Obie osie z jednego skanu.** `--list-all-pkgs` daje liczbę pakietów obok liczby CVE, czyli
+  metryka funkcjonalności z pkt 7 nie wymaga uruchamiania kontenerów.
+- **Porządek delt jest monotoniczny — ale tylko na tej samej bazie:** 3612 → 181 → 151 CVE przy
+  488 → 106 → 38 pakietach.
+
+### Wymóg, który z tego wynika: dopasowanie linii Debiana
+
+Wariant `-debian12` **łamie porządek**: ma 258 CVE, czyli **więcej niż `slim`** (181), mimo
+**trzykrotnie mniejszej liczby pakietów** (34 vs 106). Powód nie jest związany z utwardzaniem —
+to inna, starsza baza (debian 12.13 vs 13.6).
+
+**Wniosek dla fetchera:** przy parowaniu trzeba dobierać **linię distroless zgodną z bazą
+wariantu z Huba**. Dla `python:3.13` (debian 13.6) partnerem jest `python3-debian13`, nie
+`python3-debian12`. Wrzucenie obu linii do jednej klasy `distroless` bez kontroli wersji bazy
+odwróciłoby wniosek pkt 6 — distroless wypadłby gorzej od `slim`.
+
+Konkretnie: albo ograniczamy distroless do linii zgodnej z bazą partnera, albo wprowadzamy wersję
+bazy jako **jawny czynnik** w modelu. Pierwsze jest prostsze i wystarczające.
+
+### Wynik uboczny wart opisania w pracy
+
+**Mniej pakietów nie znaczy mniej CVE.** `distroless-debian12` ma 34 pakiety i 258 CVE, a
+`python:3.13-slim` 106 pakietów i 181 CVE. Świeżość bazy systemowej dominuje nad samą liczbą
+komponentów. To osłabia potoczne założenie „mniejszy obraz = bezpieczniejszy" i jest dobrym
+materiałem do rekomendacji z pkt 7: liczy się nie tylko *ile* pakietów, ale *jak świeże* są ich
+wersje.
 
 > Wcześniejszy plan proponował skalę porządkową `H0`–`H4` (STANDARD / SLIM / ALPINE /
 > DISTROLESS / STATIC) z `has_shell` i `nonroot` jako czynnikami ortogonalnymi. Został
@@ -320,10 +447,9 @@ Czynniki ortogonalne, mierzone niezależnie od klasy:
 | `pull_ref` | skąd Trivy ściąga warstwy |
 | `registry` | `hub` / `gcr` / `mirror` |
 | `mirror_ok` | czy lustro miało ten obraz (sondowane, nie zakładane) |
-| `nonroot` | flaga konfiguracyjna |
-| `role` | `production` / `reference` — rozdziela pkt 6 od pkt 7 |
+| `nonroot_available` | czy repozytorium oferuje wariant `nonroot` (własność, nie osobny wiersz) |
 | `layer_key` | klucz deduplikacji dla analizy CVE |
-| `paired` | czy ta sama `family` ma ≥2 klasy |
+| `paired` | czy `family` ma wariant `standard` + ≥1 klasę utwardzoną (warunek analizy z pkt 7) |
 
 ### Przepływ danych
 
@@ -361,11 +487,20 @@ Bieżąca linia `debian13` to 12 repozytoriów, wszystkie potwierdzone jako dost
 `static`, `base`, `base-nossl`, `cc`, `java-base`, `java17`, `java21`, `java25`,
 `nodejs22`, `nodejs24`, `nodejs26`, `python3`.
 
-Przy zbiorze zatwierdzonym (`latest` + `nonroot`) to 12 obrazów × 2 tagi = **24 `image_ref`**,
-ale wobec Konsekwencji 1 zaledwie **12 niezależnych profili CVE**. Linia `debian12` (również
-dostępna) mniej więcej podwaja tę liczbę i daje dodatkowo wymiar „starsza vs nowsza baza
-Debiana" — przy czym wersja bazy jest wtedy zmienną, więc obserwacje z `debian12` i `debian13`
-nie są niezależne w obrębie tej samej technologii.
+Przy jednym tagu na repozytorium (`latest`, patrz Konsekwencja 1) to **12 obrazów = 12 skanów
+= 12 niezależnych profili CVE**. Bez sztucznego mnożenia tagów to jest realny strop tej klasy
+i trzeba go w pracy podać wprost, zamiast maskować liczbą `image_ref`.
+
+Linia `debian12` (również dostępna) podwaja tę liczbę do 24 i daje dodatkowo wymiar „starsza vs
+nowsza baza Debiana" — przy czym wersja bazy jest wtedy zmienną, więc obserwacje z `debian12`
+i `debian13` nie są niezależne w obrębie tej samej technologii i wymagają traktowania
+technologii jako czynnika grupującego.
+
+**To jest najostrzejsze ograniczenie liczebnościowe całej pracy.** Klasy `standard`, `slim`
+i `alpine` mają po kilka tysięcy kandydatów, a `distroless` kilkanaście. Żadne warstwowanie tego
+nie naprawi — asymetria wynika z tego, że distroless po prostu istnieje dla ~5 technologii.
+Wniosek: porównania z udziałem distroless opieramy na **analizie sparowanej w obrębie tych kilku
+technologii**, a nie na testach porównujących liczne grupy o skrajnie różnych liczebnościach.
 
 Sufiksy architektury (`amd64`, `arm64`, `arm`, `s390x`, `ppc64le`, `riscv64`) **nie** mnożą
 wierszy — `latest` jest indeksem manifestów, więc bierzemy jedną architekturę (amd64) na skan.
@@ -373,6 +508,185 @@ wierszy — `latest` jest indeksem manifestów, więc bierzemy jedną architektu
 Żeby N distroless urósł: albo dodajesz starsze linie debianowe jako osobne obserwacje, albo
 dodajesz pokrewne korpusy (Chainguard / Wolfi) i piszesz w pracy „distroless-like", nie udając
 że to ten sam Distroless Google.
+
+## Architektura kampanii skanowania
+
+Pytanie „pobrać 10 tys. obrazów naraz i karmić Trivy, czy pobierać–skanować–usuwać po jednym"
+ma trzecią odpowiedź, lepszą od obu.
+
+### Odrzucone: pobranie całej bazy z góry
+
+~10 tys. obrazów to ok. 1,2 TB surowo, po deduplikacji warstw realnie 400–600 GB. Przy 178 GB
+wolnych na C: to nie wchodzi w grę. Odpada bez dalszej analizy.
+
+### Odrzucone: `docker pull` → skan → `docker rmi` po każdym obrazie
+
+Zużycie dysku jest ograniczone, ale ten wariant ma trzy wady:
+
+1. **Niszczy współdzielenie warstw.** `docker rmi` usuwa warstwy, do których nie ma już
+   referencji. `python:3.13` i `python:3.13-slim` dzielą warstwy bazowe Debiana — po usunięciu
+   pierwszego obrazu drugi ściąga je ponownie. Przy 10 tys. obrazów o silnie współdzielonych
+   bazach zwielokrotnia to transfer.
+2. **Wymaga demona Dockera** i montowania `/var/run/docker.sock` do samego skanowania.
+3. **Ściąga cały obraz**, choć Trivy potrzebuje wyłącznie metadanych pakietów.
+
+### Wybrane: `trivy image --image-src remote`
+
+Trivy sięga po warstwy prosto do rejestru, bez demona i bez lokalnego składowania obrazów.
+Dokumentacja: *„When scanning images from a container registry, Trivy processes each layer by
+**streaming**, loading only the necessary files for the scan into memory and discarding
+unnecessary files."*
+
+Trzy zalety rozstrzygające przy tej skali:
+
+- **Cache po warstwach działa między obrazami.** Trivy kluczuje cache po `image ID` i `layer ID`,
+  co *„enables faster scans of the same container image **or different images that share
+  layers**"*. Tysiące obrazów z Huba dzielą te same bazy `debian` i `alpine`, więc analiza bazy
+  wykonuje się raz. To dokładnie odwrotność wady wariantu z `docker rmi`.
+- **Znika potrzeba montowania gniazda Dockera.** Skaner nadal działa w kontenerze — patrz
+  [Kontener orkiestrujący](#kontener-orkiestrujący-po-co-był-dood-i-co-z-niego-zostaje) — ale
+  przestaje potrzebować `/var/run/docker.sock`.
+- **Ścieżka pobierania jest sterowalna.** `pull_ref` wskazujący `mirror.gcr.io` omija limit
+  200/6 h Docker Huba.
+
+### Kontener orkiestrujący: po co był DooD i co z niego zostaje
+
+Pod nazwą „DooD" kryły się **dwie niezależne rzeczy**, które trzeba rozdzielić, bo tylko jedna
+z nich odpada:
+
+1. **Trivy i orkiestrator działają w kontenerze**, żeby nie instalować skanera, Pythona
+   i zależności na maszynie i nie zaśmiecać systemu. **To był powód sięgnięcia po kontener i to
+   zostaje bez zmian.**
+2. **Montowanie `/var/run/docker.sock`** do tego kontenera, żeby Trivy w środku mógł rozmawiać
+   z demonem Dockera hosta i wykonywać `docker pull` oraz czytać lokalne obrazy. **Tylko ten
+   element odpada.**
+
+Przy `--image-src remote` kontener nie potrzebuje demona hosta — komunikuje się bezpośrednio
+z rejestrami po HTTPS. Cel „nie zaśmiecać komputera" jest więc realizowany **lepiej niż wcześniej**:
+na hoście nie ma ani skanera, ani obrazów badanych, ani warstw w lokalnym storage Dockera.
+
+#### To jest dodatkowo argument merytoryczny do pracy
+
+Zamontowanie `/var/run/docker.sock` w kontenerze jest równoważne **oddaniu temu kontenerowi
+uprawnień roota na hoście** — proces w środku może utworzyć dowolny kontener z dowolnym
+montowaniem. NIST SP 800-190 wskazuje to wprost jako antywzorzec, podobnie Liz Rice w kontekście
+ucieczek z kontenera.
+
+Rezygnacja z tego montowania oznacza więc, że **narzędzie badawcze samo przestaje łamać zasady,
+których skuteczność praca mierzy**. Warto to opisać w pracy jako świadome zastosowanie badanych
+reguł do własnego laboratorium — dobrze wygląda przy pkt 1 (izolacja) i jest uczciwsze niż
+opisywanie DooD jako „modelu izolacji", którym nigdy nie był.
+
+#### Co kontener potrzebuje w zamian
+
+Zamiast gniazda Dockera potrzebne są dwie rzeczy:
+
+- **Sieć wychodząca** do `mirror.gcr.io`, `gcr.io`, Docker Huba i GHCR (baza Trivy).
+- **Trwałe montowanie** katalogów `trivy_cache/`, `reports/`, `results/` i pliku `lab.db`.
+
+**To nie jest PVC.** `PersistentVolumeClaim` to obiekt Kubernetesa; tutaj działamy na czystym
+Dockerze na stacji roboczej, więc odpowiednikiem jest **bind mount** (`-v <host>:<kontener>`)
+albo named volume. Kubernetes nie wchodzi do projektu — patrz
+[Czego nie dodawać](#czego-nie-dodawać).
+
+Co ważne, **ten wymóg jest już spełniony**: kod działa dziś wyłącznie z montowania katalogu
+roboczego, a wszystkie cztery ścieżki leżą w tym katalogu. Nie ma tu nic do dobudowania,
+wystarczy tego montowania nie usuwać. Trwałość jest krytyczna, nie kosmetyczna: gdyby cache
+siedział w warstwie zapisywalnej kontenera, jego odtworzenie kasowałoby zarówno przypiętą bazę
+CVE (rozjeżdżając [zamrożenie wersji](#krytyczne-zamrożenie-bazy-cve-na-czas-kampanii)), jak
+i cache warstw, czyli główną oszczędność czasu, a kolejka SQLite traciłaby postęp kampanii.
+
+Uprawnienia kontenera schodzą więc do zwykłego procesu z dostępem do sieci i kilku montowań —
+bez `--privileged`, bez gniazda Dockera, bez potrzeby roota.
+
+#### Zmiany w `Dockerfile`
+
+Stan obecny i co z nim zrobić, w kolejności ważności:
+
+1. **Dodać `--image-src remote` do wywołania Trivy** (to zmiana w kodzie, nie w `Dockerfile`,
+   ale jest źródłem problemu). Domyślna kolejność źródeł w Trivy to
+   `docker,containerd,podman,remote`, więc **demon hosta jest odpytywany pierwszy**. To dokładnie
+   dlatego obrazy badane lądowały w lokalnym storage Dockera i zaśmiecały komputer. Jawne
+   `--image-src remote` wycina tę ścieżkę.
+2. **Usunąć `RUN apt-get install -y docker.io`.** Pakiet dostarcza Docker CLI, którego
+   **nic nie używa** — `scanner.py` wywołuje wyłącznie `trivy`, nigdy `docker`. Był potrzebny
+   tylko przy założeniu DooD. Zysk: mniejszy obraz narzędzia i brak klienta Dockera w środku, co
+   jest spójne z tematem pracy.
+3. **Podbić wersję Trivy — `v0.45.1` nie jest już do pobrania.** To nie jest kwestia „starej,
+   ale działającej" wersji: **aquasecurity/trivy usuwa binaria starych wydań z GitHub Releases.**
+   Tagi gita zostają (`refs/tags/v0.45.1` istnieje), ale plików nie ma. Z 92 opublikowanych wydań
+   pozostały `v0.0.1`–`v0.0.5` oraz dopiero `v0.69.2` i nowsze — **cała seria 0.4x zniknęła**.
+   `install.sh` zwraca w tej sytuacji kod `1`, więc `docker build` **padał** na tej warstwie
+   (dobra wiadomość: głośno, nie po cichu obrazem bez skanera). Przypięto `v0.74.0`, zweryfikowane
+   jako instalowalne i działające. Do `RUN` dodano `trivy --version`, żeby przyszłe usunięcie
+   wydania było widoczne od razu przy budowaniu. **Użytą wersję trzeba zapisać w pracy**, bo
+   wpływa na wyniki skanów.
+4. **Dodać `COPY` źródeł** — potrzebne, ale **nie pilne**. Dziś obraz kopiuje tylko
+   `requirements.txt`, a `CMD ["python", "scanner.py"]` działa wyłącznie dzięki montowaniu.
+   Do rozwoju (Kroki 1–6) montowanie jest wygodniejsze, bo nie wymaga przebudowy po każdej
+   zmianie. `COPY` i bind mount **nie kolidują** — montowanie przesłania skopiowaną warstwę, więc
+   można mieć oba: `COPY` daje odtwarzalny artefakt do opisania w pracy, mount zostaje trybem
+   roboczym. Termin: przed pisaniem rozdziału o narzędziu, nie przed Krokiem 1.
+5. **Przypiąć wersje w `requirements.txt`** i dodać `pyarrow` (patrz
+   [Dług techniczny](#dług-techniczny-w-istniejącym-kodzie)).
+
+### Krytyczne: zamrożenie bazy CVE na czas kampanii
+
+To ważniejsze niż samo zarządzanie dyskiem i łatwo to przeoczyć, bo nie objawia się błędem.
+
+**Baza podatności Trivy jest przebudowywana co 6 godzin, a klient odświeża ją samoczynnie
+zgodnie z polem `NextUpdate` w `metadata.json`** — zmierzone: `UpdatedAt 2026-09-13T19:03Z`,
+`NextUpdate 2026-09-14T19:03Z`, czyli **co ~24 h**, nie co 6 h. Kampania trwająca kilka dni
+oznacza więc, że obrazy skanowane pierwszego dnia są oceniane wobec **innej bazy CVE** niż
+skanowane trzeciego. Delta `distroless − standard` zaczyna wtedy częściowo odzwierciedlać
+**moment skanowania**, a nie stopień utwardzenia. Jest to systematyczny confounder unieważniający
+porównania z pkt 6 i 7 — niezależnie od tego, czy odświeżanie jest co 6, czy co 24 godziny.
+
+Obowiązkowa procedura — baza pobrana raz, potem zamrożona:
+
+```bash
+# raz, na starcie kampanii
+trivy image --cache-dir ./trivy_cache --download-db-only
+trivy image --cache-dir ./trivy_cache --download-java-db-only
+
+# archiwizacja do zalacznika i do odtworzenia wynikow
+cp ./trivy_cache/db/metadata.json ./trivy_cache/db/trivy.db  results/db_snapshot/
+
+# wszystkie 10 tys. skanow
+trivy image --cache-dir ./trivy_cache \
+            --skip-db-update --skip-java-db-update \
+            --image-src remote --scanners vuln --list-all-pkgs \
+            --format json --output <raport> <pull_ref>
+```
+
+W pracy trzeba podać **wersję bazy i datę jej pobrania** z `metadata.json`. Baza Java DB jest
+przebudowywana raz na dobę i ma znaczenie, bo `java` jest jedną z rodzin distroless.
+
+Uwaga na rozmiar: pobranie to ~113 MiB skompresowane, ale **`trivy.db` zajmuje ~1,3 GB**
+na dysku. Do załącznika pracy nie nadaje się sam plik — archiwizujemy skompresowany artefakt
+albo zapisujemy jego digest wraz z `metadata.json`.
+
+### Pozostałe decyzje operacyjne
+
+- **`--scanners vuln`.** Domyślnie Trivy włącza też skaner sekretów, który jest kosztowny
+  czasowo i nieistotny dla pytania badawczego. Wyłączamy go jawnie.
+- **`--list-all-pkgs`.** Konieczne dla osi funkcjonalności z pkt 7 (liczba pakietów, obecność
+  `bash`/`busybox`/`apt`/`apk`).
+- **Nie włączać `--sbom-sources`.** Jeśli Trivy znajdzie atestację SBOM, skanuje **SBOM zamiast
+  obrazu**. Część obrazów miałaby wtedy SBOM, a część nie, czyli byłyby mierzone **dwiema różnymi
+  metodami** — to zabija porównywalność. Flaga jest opcjonalna i eksperymentalna, więc wystarczy
+  jej nie dodawać, ale należy to zapisać jako świadomą decyzję.
+- **Zrównoleglenie — uwaga na konflikt z cache.** Dokumentacja zaleca `--cache-backend memory`
+  do równoległego uruchamiania, ale ten backend **nie utrwala wyników**, więc współdzielone
+  warstwy byłyby analizowane od nowa przy każdym obrazie, co likwiduje główną oszczędność.
+  Osobny `--cache-dir` per worker też nie jest rozwiązaniem, bo każdy katalog ściąga własną kopię
+  bazy (i psuje zamrożenie wersji, o ile nie skopiujemy tam przypiętej bazy). Realne opcje:
+  umiarkowana równoległość na jednym cache'u albo `--cache-backend redis` jako cache wspólny.
+  Nie zrównoleglać bezrefleksyjnie.
+- **`TMPDIR` na pojemnym dysku.** Duże pliki potrzebne do analizy (JAR-y, binaria) Trivy zapisuje
+  tymczasowo na dysk. Obrazy `java` będą generować szczyty zużycia. `TMPDIR` kierujemy na D:
+  i monitorujemy.
+- **Kompresja raportów w locie.** ~10 tys. raportów JSON to 15–20 GB; gzip natychmiast po skanie.
 
 ## Mikro-kroki
 
@@ -385,8 +699,11 @@ Rola asystenta w tym planie: **drogowskaz**. Kod pisze student, commit po każdy
   `feat(fetcher): paginowany katalog Hub z kilku zapytan`
 - [ ] **Krok 2 — katalog GCR distroless.** Lista obrazów i dozwolonych tagów z README; API GCR
   tylko potwierdza istnienie. **Nie iterować całego `manifest`.** Filtr odrzuca: końcówki
-  `.sig` / `.att`, prefix `update-available-`, tagi będące samym digestem / `sha256-...`.
-  `feat(fetcher): enumeracja GCR distroless z filtrem tagow pomocniczych`
+  `.sig` / `.att`, prefix `update-available-`, tagi będące samym digestem / `sha256-...`,
+  oraz **`debug`, `debug-nonroot` i `nonroot`** (Konsekwencje 1 i 2). **Zostaje wyłącznie
+  `latest`** — jeden wiersz na repozytorium. Obecność wariantu `nonroot` zapisujemy jako
+  `nonroot_available`, bez pobierania obrazu.
+  `feat(fetcher): enumeracja GCR distroless, tylko tag latest`
 - [ ] **Krok 3 — tagi Hub + cache + backoff.** Token Hub tylko do API, **nie commitować**.
   `feat(fetcher): tagi Hub z cache i backoff przy 429`
 - [ ] **Krok 4 — klasyfikacja + `pull_ref` + sonda lustra.** Dla każdego repo sprawdzić
@@ -394,11 +711,13 @@ Rola asystenta w tym planie: **drogowskaz**. Kod pisze student, commit po każdy
   **Nie** stosować bezwarunkowego przepisywania URL (patrz przypadek `openjdk`).
   `feat(fetcher): mapowanie pull_ref z sonda dostepnosci lustra`
 - [ ] **Krok 5 — matryca 10 tys.** Merge Hub + GCR, dedup po `layer_key`, kwoty miękkie,
-  `paired`, `role`.
+  wyliczenie `paired` względem wariantu `standard` tej samej technologii.
   `feat(fetcher): matryca wielorejestrowa do 10 tys. skanow`
-- [ ] **Krok 6 — skaner.** Trivy na `pull_ref`, partie poniżej limitu, resume gdy JSON raportu
-  istnieje. Nie 10 tys. w jedną noc przez Hub.
-  `feat(scanner): skan pull_ref z resume i limitem partii`
+- [ ] **Krok 6 — skaner.** Trivy na `pull_ref` z `--image-src remote`, **baza CVE zamrożona
+  przed startem kampanii** (`--download-db-only`, potem `--skip-db-update`), partie poniżej
+  limitu, resume gdy JSON raportu istnieje. Szczegóły i uzasadnienie:
+  [Architektura kampanii skanowania](#architektura-kampanii-skanowania).
+  `feat(scanner): skan pull_ref z resume, image-src remote i zamrozona baza CVE`
 
 ### Cel akceptacji
 
@@ -430,8 +749,12 @@ Zidentyfikowany przy rekonesansie, do domknięcia przy refaktoryzacji:
   przyrostowy do Parquet.
 - Skan musi używać `--list-all-pkgs`, co da liczbę pakietów oraz wykrycie
   `bash`/`busybox`/`apt`/`apk` — to metryka funkcjonalności do pkt 7.
-- `Dockerfile` nie zawiera `COPY scanner.py .` — kod działa wyłącznie z montowania.
+- `Dockerfile` nie zawiera `COPY` źródeł — kod działa wyłącznie z montowania. Instaluje też
+  `docker.io`, którego nic nie używa. Szczegóły i priorytety:
+  [Zmiany w `Dockerfile`](#zmiany-w-dockerfile).
 - `requirements.txt` bez przypiętych wersji; do przypięcia wszystkie, do dołożenia `pyarrow`.
+- `run_trivy_scan` nie przekazuje `--image-src remote`, więc Trivy odpytuje najpierw demona hosta
+  i ściąga obrazy do lokalnego storage Dockera — źródło zaśmiecania maszyny.
 
 ### Rozmiar danych i dysk
 
@@ -439,9 +762,9 @@ Przy 10 tys. obrazów: ~15–20 GB surowego JSON-a (obecnie 75 raportów = ~130 
 `report_iojs.json` ma 12 MB). Dysk w chwili planowania: C: 178 GB wolnego, D: 715 GB;
 `reports/` 115 MB, `trivy_cache/` 2,3 GB.
 
-Alternatywa dla DooD: Trivy z `--image-src remote` sięga po warstwy prosto do rejestru i trzyma
-tylko wynik w cache fanal — wolumen `/var/run/docker.sock` przestaje być potrzebny do
-skanowania. Architekturę DooD zostawiamy opisaną w pracy jako model izolacji laboratorium.
+Kluczowe: obrazy badane **nie trafiają na dysk hosta ani do lokalnego storage Dockera** —
+zostają tylko raporty i cache analizy. Wybór trybu pobierania omawia
+[Architektura kampanii skanowania](#architektura-kampanii-skanowania).
 
 ## Stan repozytorium
 
@@ -483,7 +806,8 @@ for r in static base base-nossl cc java-base java17 java21 java25 \
     "https://gcr.io/v2/distroless/$r-debian13/manifests/latest"           # 200
 done
 
-# warstwy wariantow distroless (latest vs nonroot vs debug)
+# warstwy wariantow distroless: dowod, ze 4 aliasy = 2 inwentarze pakietow
+# (warianty debug sluza tu wylacznie jako dowod, do proby nie wchodza)
 for t in latest nonroot debug debug-nonroot; do
   curl -s -H "$A" "https://gcr.io/v2/distroless/python3-debian12/manifests/$t"
 done
