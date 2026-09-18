@@ -894,16 +894,26 @@ zostają tylko raporty i cache analizy. Wybór trybu pobierania omawia
 
 ## Stan repozytorium
 
-Jedyny commit merytoryczny to `dee4fa8 inital commit with PoC`. Implementacja fetchera z 21.08
-**nie została zacommitowana, a pliki `.py` zniknęły** przy przenoszeniu katalogu. W `src/`
-zostało wyłącznie skompilowane bytecode (`__pycache__/*.cpython-314.pyc`), które paradoksalnie
-było jedyną wersjonowaną częścią `src/`. Odzyskiwalne moduły: `config`, `taxonomy`, `store`,
-`matrix`, `registry/{http,dockerhub,gcr}`; brak `cli.py` (nie ma nawet `.pyc`).
+Repozytorium zawiera dziś `Dockerfile`, `requirements.txt`, `scanner.py` (PoC) oraz ten
+dokument. PoC nie jest podstawą dalszej pracy — jego dług techniczny jest spisany
+w [osobnym rozdziale](#dług-techniczny-w-istniejącym-kodzie), a implementacja idzie od nowa
+według Kroków 1–6.
 
-Decyzja: **nie odtwarzamy** kodu z bytecode'u — zaczynamy od Kroku 1 zgodnie z planem
-mentorskim. Bytecode pozostaje w historii gita (commit `dee4fa8`), więc decyzja jest odwracalna.
-`__pycache__/` i `*.py[cod]` są od teraz ignorowane, żeby przypadek „zacommitowane `.pyc`,
-niezacommitowane `.py`" się nie powtórzył.
+### Implementacja fetchera z sierpnia — wątek zamknięty
+
+Implementacja z 21.08 nie została zacommitowana, a pliki `.py` zniknęły przy przenoszeniu
+katalogu; w `src/` zostało wyłącznie bytecode, które paradoksalnie było jedyną wersjonowaną
+częścią katalogu.
+
+**Decyzja: ta implementacja jest ignorowana.** Nie jest punktem odniesienia, nie odtwarzamy jej
+z bytecode'u i nie porównujemy z nią nowego kodu. Jedyną obowiązującą ścieżką są Kroki 1–6
+z tego dokumentu. Bytecode został usunięty z drzewa (commit `1ca3271`); pozostaje osiągalny
+w historii gita pod `dee4fa8`, ale wyłącznie jako ślad, nie jako materiał do pracy.
+
+Z całego epizodu zostaje **jeden wniosek operacyjny**, niezależny od wartości tamtego kodu:
+plik nieobjęty gitem nie istnieje. `__pycache__/` i `*.py[cod]` są ignorowane, żeby układ
+„zacommitowane `.pyc`, niezacommitowane `.py`" nie mógł się powtórzyć, a kod każdego kroku
+wchodzi do repozytorium wraz z zamknięciem tego kroku.
 
 ## Jak odtworzyć pomiary z tego dokumentu
 
