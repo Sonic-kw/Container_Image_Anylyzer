@@ -34,6 +34,26 @@ Skaner jest **narzędziem badawczym**, nie produktem. Ciężar pracy leży w pun
 6. Porównanie wyników metod utwardzania (Slim, Alpine, Distroless vs Standard).
 7. Wyciągnięcie wniosków (balans bezpieczeństwo vs funkcjonalność runtime).
 
+### Jak zakres APD ma się do kroków implementacji
+
+Częste zamieszanie: „Kroki 0–6" z rozdziału [Mikro-kroki](#mikro-kroki) **nie są** alternatywnym
+planem pracy. To rozpisanie na zadania programistyczne **wyłącznie punktów 3 i 4** zatwierdzonego
+zakresu. Pozostałe punkty albo poprzedzają kod, albo następują po nim.
+
+| Punkt APD | Czym jest | Kroki kodu |
+| --- | --- | --- |
+| 1. Wprowadzenie, łańcuch dostaw, izolacja | tekst, literatura | brak — pisanie |
+| 2. Przegląd narzędzi, kryteria doboru próby | tekst oparty na pomiarach | dane z Kroku 0 i 1 |
+| 3. System orkiestracji | **kod** | Kroki 1, 2, 3, 6 |
+| 4. Projekt i uruchomienie matrycy | **kod** | Kroki 4, 5 |
+| 5. Analiza statystyczna | praca na wynikach | brak — po Kroku 6 |
+| 6. Porównanie metod utwardzania | praca na wynikach | brak — po Kroku 6 |
+| 7. Wnioski, balans bezpieczeństwo/funkcjonalność | praca na wynikach | brak — po Kroku 6 |
+
+Wniosek, który warto mieć z tyłu głowy przy planowaniu czasu: **kroki kodu kończą się tam, gdzie
+zaczyna się właściwy ciężar pracy**. Krok 6 produkuje tabelę z liczbami, a punkty 5–7 dopiero
+z niej powstają. Rozbudowywanie skanera ponad to, czego wymaga matryca, nie przybliża do obrony.
+
 ### Literatura
 
 1. Rice L., *Container Security*, O'Reilly 2020
@@ -139,12 +159,44 @@ wyłącznie szczegółem transportowym mówiącym, skąd Trivy ściąga warstwy.
 Zmiana `pull_ref` nigdy nie zmienia `logical_ref`. Ten sam obraz logiczny nie może wejść do
 matrycy dwa razy (Hub + lustro = 1 wiersz).
 
-### Dwa różne limity — nie mylić w pracy
+### Trzy różne limity — nie mylić w pracy
 
 | Limit | Czego dotyczy | Obejście |
 | --- | --- | --- |
 | API listowania | search, endpoint tagów; Hub zwraca `429` | cache + backoff + token PAT |
+| **Offset paginacji** | **głębokość stronicowania dla żądań anonimowych; Hub zwraca `403`** | **token PAT; dla `library/` trik z `ordering`** |
 | Pull warstw | `docker pull` / Trivy; konto darmowe ok. **200 pulli / 6 h** | lustro `mirror.gcr.io` |
+
+#### Limit offsetu — odkryty 18.09.2026, zmienia wykonalność Kroku 3
+
+Hub odmawia anonimowego stronicowania poniżej pewnej głębokości, zwracając `403` z treścią:
+
+```
+{"message":"pagination offset too large for anonymous requests; sign in to page further"}
+```
+
+Limit dotyczy **offsetu**, nie numeru strony (`page=2&page_size=50` przechodzi, `page=2&page_size=100`
+już nie), i jest **różny dla różnych endpointów**. Zmierzone progi:
+
+| Endpoint | Ostatni działający offset | Pierwszy zablokowany |
+| --- | --- | --- |
+| `/v2/repositories/library/` | 90 | 100 |
+| `/v2/search/repositories/` | 100 | 200 |
+| `/v2/repositories/{ns}/{name}/tags/` | 900 | 3900 |
+
+Sprawdzone: zjawisko **nie zależy** od `User-Agent` ani od biblioteki klienckiej (identyczne
+wyniki dla `requests` i `urllib`, dla nagłówka własnego i przeglądarkowego), więc nie jest to
+wykrywanie bota, tylko celowa polityka API.
+
+**Obejście dla `library/` bez tokenu.** Repozytoriów jest 181, a anonimowo widać najwyżej
+pierwszą setkę. Dwa żądania z przeciwnych końców sortowania pokrywają jednak cały zbiór —
+`ordering=pull_count` (malejąco) plus `ordering=-pull_count` (rosnąco) dają część wspólną
+19 pozycji i sumę **dokładnie 181**, zgodną z deklarowanym `count`. Odwrócona semantyka
+`ordering` przestaje więc być ciekawostką, a staje się narzędziem.
+
+**Konsekwencja dla Kroku 3: token PAT jest wymagany, nie opcjonalny.** Tagów `python` jest
+3923, czyli powyżej progu 3900 — ostatnia strona odpadnie. Dla `openjdk` (17 042 tagi)
+anonimowo zobaczymy kilka procent zbioru, co uniemożliwiłoby deduplikację i dobór próby.
 
 Przy 10 tys. skanów sam Hub to ~12,5 doby. Dokumentacja Google potwierdza, że pobrania przez
 `mirror.gcr.io` **nie są liczone do limitu Docker Huba**. Lustro jest więc **częścią metodyki**,
@@ -201,11 +253,35 @@ ma w źródle. Do zapisania jako ograniczenie metodologiczne.
 
 Fakty do zacytowania w rozdz. 2 (kryteria doboru próby):
 
-- Populacja `library/` liczy dokładnie **180 repozytoriów** (`count=181` w search), więc da się
-  ją wyliczyć wyczerpująco na 2 stronach po 100. Pierwotny `page_size=100` w `scanner.py`
-  obcinał ją arbitralnie.
+- Populacja `library/` liczy **181 repozytoriów** — tyle deklaruje `count` i tyle daje suma
+  dwóch przebiegów po `ordering` (zweryfikowane 18.09.2026). Pierwotny `page_size=100`
+  w `scanner.py` obcinał ją arbitralnie. Uwaga: zwykła paginacja **nie wystarczy**, bo
+  anonimowy offset jest ograniczony — patrz [Limit offsetu](#limit-offsetu--odkryty-18092026-zmienia-wykonalność-kroku-3).
+- `page_size` jest **po cichu ścinany do 100**. Przy `page_size=1000` Hub zwraca 100 rekordów,
+  ale odsyła `page_size=1000` w polu `next`, więc nic nie sygnalizuje obcięcia. Nie wolno liczyć
+  oczekiwanej liczby stron jako `count / page_size` z inną wartością.
 - API Docker Hub ma **odwróconą semantykę sortowania**: `ordering=pull_count` zwraca malejąco,
-  `ordering=-pull_count` rosnąco. Nie polegamy na tym — sortujemy po stronie klienta.
+  `ordering=-pull_count` rosnąco. Przy sortowaniu wyników polegamy na kliencie, ale sama
+  dwukierunkowość jest wykorzystana celowo jako obejście limitu offsetu (patrz wyżej).
+- **Dwa endpointy Kroku 1 mają prawie rozłączne pola.** Wspólne są tylko `pull_count`
+  i `star_count`:
+
+  | | `/repositories/library/` | `/search/repositories/` |
+  | --- | --- | --- |
+  | nazwa | `name` + `namespace` | `repo_name` (sklejone) |
+  | opis | `description` | `short_description` |
+  | data | `last_updated`, `date_registered` | **brak** |
+  | oficjalność | brak (wszystko jest oficjalne) | `is_official` |
+  | rozmiar | `storage_size` | brak |
+
+  Konsekwencje: potrzebne są **dwie funkcje normalizujące** do wspólnego rekordu; `repo_name`
+  wymaga rozbicia, bo oficjalne przychodzą jako `nginx`, a pozostałe jako `bitnami/nginx`
+  (bez tego klucz deduplikacji się rozjeżdża i to samo repo wchodzi dwa razy); `last_updated`
+  dla wyników z wyszukiwania zostaje puste i jest uzupełniane w Kroku 3.
+- **Kolejność źródeł w Kroku 1 jest nośna.** Ponieważ rekord z `library/` jest bogatszy,
+  przetwarzamy go **przed** wyszukiwaniem i pomijamy klucze już widziane. Dzięki temu nie
+  trzeba pisać logiki scalania rekordów. Weryfikacja przebiegu z 18.09.2026: 1764 unikalne
+  repozytoria, zero duplikatów, `last_updated` obecne w dokładnie 181 rekordach.
 - Populacja tagów to ~700 tys. (`openjdk` 17042, `node` 9036, `python` 3911). Deduplikacja
   redukuje ją o ~2/3 (100 tagów `python` = 33 unikalne obrazy).
 - Endpoint tagów zwraca `full_size`, `digest`, `tag_last_pushed` oraz tablicę `images[]`
@@ -692,10 +768,58 @@ albo zapisujemy jego digest wraz z `metadata.json`.
 
 Rola asystenta w tym planie: **drogowskaz**. Kod pisze student, commit po każdym kroku.
 
+### Łańcuch zależności — po co jest każdy krok
+
+Kroki dzielą się na trzy fazy i **nie da się żadnej przeskoczyć**: nie zeskanujesz obrazu,
+o którym nie wiesz, że istnieje, i nie porównasz `slim` ze `standard`, jeśli wcześniej nikt
+ich nie sparował.
+
+| Faza | Kroki | Pytanie, na które odpowiada |
+| --- | --- | --- |
+| Znajdź | 1, 2, 3 | co w ogóle istnieje |
+| Poukładaj | 4, 5 | co z czym porównać |
+| Zmierz | 6 | ile jest CVE i pakietów |
+
+**Krok 0 — rozejrzenie się.** Sprawdzenie ręcznie, czy potrzebne dane są w ogóle dostępne, zanim
+powstanie linijka kodu. Stąd wiemy, że oficjalnych repozytoriów jest 181, że `python` ma ~4 tys.
+tagów i że distroless istnieje tylko dla kilku technologii. Te liczby są cytowane w punkcie 2.
+
+**Krok 1 — spis repozytoriów z Huba.** Lista **nazw**, nie obrazów: `python` to repozytorium,
+`python:3.13-slim` to obraz w środku. Osobny krok, bo źródła są dwa (lista oficjalnych i
+wyszukiwarka) i mają prawie rozłączne schematy odpowiedzi — patrz
+[Ustalenia zweryfikowane empirycznie](#ustalenia-zweryfikowane-empirycznie) — więc trzeba je
+sprowadzić do wspólnego kształtu rekordu.
+
+**Krok 2 — spis distroless z GCR.** Distroless nie mieszka na Hubie, więc Krok 1 go nie zobaczy.
+Inny rejestr, inne API, inne reguły filtrowania. Tu odpadają aliasy `debug`, `debug-nonroot`
+i `nonroot`, bo cztery tagi to tylko dwa inwentarze pakietów (Konsekwencje 1 i 2) — bez tego
+ten sam profil CVE policzyłby się kilka razy.
+
+**Krok 3 — tagi, czyli konkretne wersje.** Zamienia nazwę `python` na listę faktycznych obrazów.
+**To moment, w którym z ~1,8 tys. repozytoriów robią się dziesiątki tysięcy obrazów** — i dlatego
+dopiero tutaj pojawia się potrzeba cache, backoffu i tokenu.
+
+**Krok 4 — klasyfikacja i ścieżka pobierania.** Dwie rzeczy naraz. Przypisanie klasy utwardzenia
+z nazwy tagu — to ta jedna kolumna, wokół której kręci się cała analiza z punktów 5–7. Oraz
+ustalenie, skąd obraz ściągnąć: przez lustro (nie liczy się do limitu 200/6 h) czy z Huba,
+sprawdzane **per repozytorium**, bo lustro ma dziury.
+
+**Krok 5 — złożenie matrycy.** Sklejenie obu katalogów i doprowadzenie do stanu zdatnego do
+analizy: deduplikacja (trzy tagi potrafią wskazywać ten sam obraz i udawać trzy niezależne
+obserwacje), limity na repozytorium (`openjdk` i `node` same by zdominowały próbkę) oraz
+oznaczenie technologii mających komplet wariantów do porównań parami.
+
+**Krok 6 — skanowanie.** Trivy przechodzi przez matrycę i zapisuje liczbę CVE oraz pakietów.
+Dwie rzeczy przesądzają o wartości wyniku: [zamrożenie bazy CVE](#krytyczne-zamrożenie-bazy-cve-na-czas-kampanii),
+bez którego różnice między klasami częściowo odzwierciedlałyby datę skanowania, oraz skanowanie
+prosto z rejestru, bo kilkuset gigabajtów obrazów nie ma gdzie trzymać.
+
 - [x] **Krok 0 — obserwacja (bez kodu).** Zamknięty: library `count=181`; search alpine
   `count=103978` + `next`; tagi python (alpine/slim/standard + rozmiary); allowlist Distroless
   z README.
 - [ ] **Krok 1 — katalog Hub.** Kilka query, paginacja po `next`, dedup, `results/catalog.jsonl`.
+  Pełną listę `library/` zdobywa się **dwoma przebiegami po `ordering`**, nie paginacją —
+  anonimowy offset jest ograniczony. Wyszukiwanie daje anonimowo najwyżej 2 strony na zapytanie.
   `feat(fetcher): paginowany katalog Hub z kilku zapytan`
 - [ ] **Krok 2 — katalog GCR distroless.** Lista obrazów i dozwolonych tagów z README; API GCR
   tylko potwierdza istnienie. **Nie iterować całego `manifest`.** Filtr odrzuca: końcówki
@@ -705,6 +829,8 @@ Rola asystenta w tym planie: **drogowskaz**. Kod pisze student, commit po każdy
   `nonroot_available`, bez pobierania obrazu.
   `feat(fetcher): enumeracja GCR distroless, tylko tag latest`
 - [ ] **Krok 3 — tagi Hub + cache + backoff.** Token Hub tylko do API, **nie commitować**.
+  Token jest tu **wymagany, nie opcjonalny**: anonimowy offset urywa się przed końcem listy
+  tagów `python` (3923) i odcina większość tagów `openjdk` (17 042).
   `feat(fetcher): tagi Hub z cache i backoff przy 429`
 - [ ] **Krok 4 — klasyfikacja + `pull_ref` + sonda lustra.** Dla każdego repo sprawdzić
   dostępność na `mirror.gcr.io` i zapisać `mirror_ok`; fallback na Hub z osobnym budżetem.
