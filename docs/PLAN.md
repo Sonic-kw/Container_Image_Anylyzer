@@ -172,7 +172,7 @@ poszczególnych linii są w `SUPPORT_POLICY.md` w repozytorium upstream — to �
 „która wersja jest wspierana" do rozdz. 2.
 
 **Zabezpieczenie metodologiczne niezależne od losu rejestru.** Praca jest pomiarem
-punktu w czasie. Każdy obraz w matrycy jest pinowany digestem i datą pobrania (zgodnie z SLSA),
+punktu w czasie. Każdy obraz w matrycy jest pinowany digestem i datą pobrania (digest jest tożsamością artefaktu także w SLSA; poziomu SLSA nie oceniano),
 więc wynik pozostaje cytowalny i weryfikowalny nawet gdyby adresy kiedyś się zmieniły. Ryzyko
 rejestru nie jest ryzykiem trafności wyników.
 
@@ -301,11 +301,11 @@ Dodatkowo dokumentacja Google zaznacza, że obraz usunięty z Huba może pozosta
 **do kilku dni**. To kwestia trafności: teoretycznie można przeskanować obraz, którego już nie
 ma w źródle. Do zapisania jako ograniczenie metodologiczne.
 
-**Zabezpieczenie: porównanie digestów.** Lustro zwraca nagłówek `Docker-Content-Digest`, który
-dla sprawdzonych tagów jest identyczny z `digest` z API Huba (np. `python:3.13-slim` →
-`sha256:7c61056e…` w obu). Sonda per tag porównuje oba digesty, a `pull_ref` jest pinowany
-digestem, nie tagiem — dzięki temu skanowany jest dokładnie artefakt opisany w matrycy,
-niezależnie od stanu cache lustra.
+**Zabezpieczenie: pin digestem.** Lustro zwraca nagłówek `Docker-Content-Digest`, który
+dla ręcznie sprawdzonych tagów jest identyczny z `digest` z API Huba (np. `python:3.13-slim` →
+`sha256:7c61056e…` w obu). Kod nie wykonuje osobnego porównania (korekta 07.11.2026): sonda pyta
+lustro o manifest po `arch_digest`, a `pull_ref` jest pinowany digestem, nie tagiem — dzięki temu
+wskazywany jest dokładnie artefakt opisany w matrycy, niezależnie od stanu cache lustra.
 
 ## Ustalenia zweryfikowane empirycznie
 
@@ -416,12 +416,12 @@ obu wariantów byłoby więc pobraniem tej samej informacji dwa razy.
 matrycy na repozytorium. `nonroot` nie jest skanowany.
 
 **Dlaczego `latest`, a nie `nonroot`.** Wybór nie jest dowolny, mimo że dla CVE oba są
-równoważne. Obrazy z Huba w klasach `standard`, `slim` i `alpine` domyślnie działają jako root.
+równoważne. Wszyscy partnerzy distroless z Huba działają jako root (40 z 40 par).
 Gdybyśmy jako reprezentanta distroless wzięli `nonroot` (`User = "65532"`), do delty
-`distroless − standard` wszedłby **dodatkowy czynnik: zmiana użytkownika**, którego pozostałe
-klasy nie mają. `latest` ma `User = "0"`, czyli identycznie jak warianty z Huba, więc uprzywilejowanie
-pozostaje **stałą w całym porównaniu** i delta mierzy wyłącznie różnice w userlandzie i zestawie
-pakietów. To eliminuje confounder, którego inaczej trzeba by tłumaczyć w rozdz. 6.
+`distroless − standard` wszedłby **dodatkowy czynnik: zmiana użytkownika**. `latest` ma
+`User = "0"`, czyli identycznie jak partnerzy, więc uprzywilejowanie jest stałe w parach distroless
+i nie wchodzi do delty, choć delta nadal łączy kilka innych zmian. Korekta 07.11.2026: nie wszystkie
+obrazy z Huba działają jako root, co opisuje sekcja [Taksonomia utwardzania](#taksonomia-utwardzania).
 
 **`nonroot` nadal jest treścią pracy — tylko nie obserwacją.** Jego właściwości są udowodnione
 inspekcją manifestów, bez żadnego skanu: identyczne warstwy, `User = "0"` vs `User = "65532"`.
@@ -464,7 +464,7 @@ różni się wyłącznie metadanymi.
 
 **Poprawka:** kluczem deduplikacji dla analizy CVE musi być **lista warstw** (albo `diff_ids`
 z rootfs), nie digest manifestu. Digest manifestu zostaje jako identyfikator artefaktu do
-cytowania w pracy (pinowanie zgodne z SLSA), ale nie jako klucz niezależności obserwacji.
+cytowania w pracy (ta sama tożsamość artefaktu co w SLSA), ale nie jako klucz niezależności obserwacji.
 
 **Digest indeksu to nie digest obrazu amd64** (pomiar 29.09.2026). `python:3.13`
 i `python:3.13-trixie` mają **różne digesty indeksu**, bo pierwszy indeks zawiera dodatkowo
@@ -486,8 +486,9 @@ Wersja obowiązująca używa **czterech klas** z flagami jako osobnymi wymiarami
 - `distroless` — brak menedżera pakietów i powłoki
 
 Taksonomia nie ma czynników ortogonalnych — klasa jednoznacznie opisuje obraz. Uprzywilejowanie
-jest **stałą całego badania** (wszystkie skanowane obrazy działają jako root, `User = "0"`), co
-jest celowe: dzięki temu delty z punktu 7 nie są zanieczyszczone zmianą użytkownika
+**nie jest stałą całego zbioru, ale jest stałe w każdej parze** (pomiar 07.11.2026 na wszystkich
+raportach): 883 z 9 755 obrazów (9,1%) ma użytkownika innego niż root, a w każdej z 2 862 par obie
+strony mają ten sam status. Delty z punktu 7 nie są więc zanieczyszczone zmianą użytkownika
 (patrz Konsekwencja 1).
 
 Aliasy `debug`, `debug-nonroot` i `nonroot` są **odfiltrowywane na etapie pobierania** i nie mają
@@ -1050,8 +1051,9 @@ na hoście nie ma ani skanera, ani obrazów badanych, ani warstw w lokalnym stor
 
 Zamontowanie `/var/run/docker.sock` w kontenerze jest równoważne **oddaniu temu kontenerowi
 uprawnień roota na hoście** — proces w środku może utworzyć dowolny kontener z dowolnym
-montowaniem. NIST SP 800-190 wskazuje to wprost jako antywzorzec, podobnie Liz Rice w kontekście
-ucieczek z kontenera.
+montowaniem. Rice wiąże dostęp do demona z możliwością uruchomienia dowolnego kontenera
+(`LITERATURA.md`). Stanowiska NIST SP 800-190 w tej sprawie nie potwierdzono w notatkach, więc
+przed cytowaniem trzeba je sprawdzić w dokumencie.
 
 Rezygnacja z tego montowania oznacza więc, że **narzędzie badawcze samo przestaje łamać zasady,
 których skuteczność praca mierzy**. Warto to opisać w pracy jako świadome zastosowanie badanych
@@ -1556,10 +1558,10 @@ skoncentrowane w `standard` i w warstwie opisowej (starsze / rzadsze tagi).
 
 | Klasa | N | mediana CVE | Q1–Q3 |
 | --- | --- | --- | --- |
-| `standard` | 6223 | 595 | 185–1835 |
+| `standard` | 6223 | 595 | 185–1834 |
 | `slim` | 1683 | 366 | 203–517 |
 | `alpine` | 1794 | 98 | 36–183 |
-| `distroless` | 55 | 70 | 33–138 |
+| `distroless` | 55 | 70 | 35–132 |
 
 Mediana globalna CVE ≈ 374, mediana pakietów ≈ 174, `has_shell` ≈ 97% obrazów (distroless
 i część minimalnych alpine bez powłoki tłumaczą resztę). Porządek median klas jest zgodny
@@ -1633,7 +1635,7 @@ zostanie opisany. Lista `scan_failures.jsonl` zostaje załącznikiem / materiał
 
 | Wymaganie z PoC | Stan po Kroku 6 |
 | --- | --- |
-| `timeout` + sprawdzenie `returncode` | tak (`Scan.py`, 600 s) |
+| `timeout` + sprawdzenie `returncode` | tak (`Scan.py`, limit procesu 600 s; wcześniej działa domyślny limit Trivy) |
 | `--image-src remote` | tak |
 | `--list-all-pkgs` + metryki powłoki/apk/apt | tak |
 | bez cichych porażek | tak — każda w `scan_failures.jsonl` |

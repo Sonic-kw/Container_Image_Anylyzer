@@ -28,10 +28,16 @@ src/
   Classify.py     # Krok 4: klasa, pull_ref, sonda lustra
   Matrix.py       # Krok 5: matryca
   Scan.py         # Krok 6: Trivy
+  GcrMeta.py      # rozmiar i data wgrania distroless z gcr.io (po skanie)
   Analyze.py      # punkty APD 5–7: statystyka + wykresy
+  Funnel.py       # schemat lejka matrycy (figures/3_1_lejek.png)
+  hub_http.py     # wspólny klient HTTP dla kroków 1–4
 docs/
   PLAN.md         # metodyka, decyzje, plan analizy pod rozdz. 5–7
   KOD.md          # opis kodu i uruchomienia
+  WYNIKI.md       # wyniki skryptów, tabele i omówienia punktów APD 5–7
+  PISANIE.md      # plan pisania pracy według rozdziałów
+  LITERATURA.md   # streszczenia źródeł i mapowanie tez na rozdziały
 figures/          # PNG z Analyze.py
 ```
 
@@ -57,6 +63,9 @@ Analiza na gotowym `results/scans.jsonl`:
 
 - [`docs/PLAN.md`](docs/PLAN.md) — plan pracy, rejestry, matryca, kampania, **przepis analizy**
 - [`docs/KOD.md`](docs/KOD.md) — jak działa kod krok po kroku
+- [`docs/WYNIKI.md`](docs/WYNIKI.md) — wszystkie liczby, tabele i omówienia wyników
+- [`docs/PISANIE.md`](docs/PISANIE.md) — plan pisania pracy według rozdziałów
+- [`docs/LITERATURA.md`](docs/LITERATURA.md) — streszczenia sześciu źródeł z APD
 
 ## Stos
 

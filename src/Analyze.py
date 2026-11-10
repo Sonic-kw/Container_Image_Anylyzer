@@ -1,7 +1,8 @@
 """Punkty APD 5-7: analiza scans.jsonl i wykresy matplotlib.
 
 Wejscie: results/scans.jsonl (po Scan.py merge).
-Wyjscie: figures/*.png oraz results/analysis_summary.json.
+Wyjscie: figures/*.pgf (do pracy), figures/*.png (podglad) oraz
+results/analysis_summary.json. Eksport PGF wymaga pdflatex w PATH.
 
 Bez notebooka. Testy: Wilcoxon / Friedman / Spearman (scipy.stats).
 Glowne porownania metod na parach vs standard; Wilcoxon glownie na
@@ -23,7 +24,32 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+# Tekst w plikach PGF sklada LaTeX pracy, dlatego preambula pomiarowa odpowiada settings.tex.
+plt.rcParams.update(
+    {
+        "pgf.texsystem": "pdflatex",
+        "pgf.rcfonts": False,
+        "pgf.preamble": "\n".join(
+            (
+                r"\usepackage[T1]{fontenc}",
+                r"\usepackage[utf8]{inputenc}",
+                r"\usepackage{newtxtext}",
+                r"\usepackage{newtxmath}",
+            )
+        ),
+        "font.family": "serif",
+        "font.size": 10,
+        "axes.labelsize": 10,
+        "xtick.labelsize": 9,
+        "ytick.labelsize": 9,
+        "legend.fontsize": 9,
+    }
+)
+
 log = logging.getLogger("analyze")
+
+# Szerokosc tekstu w pracy to 155 mm (6,1 cala); wykres ma sie zmiescic bez skalowania.
+FIG_W = 6.0
 
 VARIANTS = ("standard", "slim", "alpine", "distroless")
 HARDENED = ("slim", "alpine", "distroless")
@@ -49,10 +75,13 @@ def load_scans(path: Path) -> pd.DataFrame:
 
 def savefig(fig: plt.Figure, out_dir: Path, name: str) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
-    path = out_dir / f"{name}.png"
-    fig.savefig(path, dpi=150, bbox_inches="tight")
+    png = out_dir / f"{name}.png"
+    path = out_dir / f"{name}.pgf"
+    fig.savefig(png, dpi=150, bbox_inches="tight")
+    # dpi dotyczy tylko warstw rastrowych (rasterized=True) zapisywanych obok pliku PGF
+    fig.savefig(path, dpi=300, bbox_inches="tight")
     plt.close(fig)
-    log.info("zapisano %s", path)
+    log.info("zapisano %s i %s", path, png.name)
     return path
 
 
@@ -164,33 +193,31 @@ def repo_medians(pairs: pd.DataFrame) -> pd.DataFrame:
 
 def fig_cve_by_variant(df: pd.DataFrame, out_dir: Path) -> None:
     data = [df.loc[df["variant"] == v, "cve_total"].dropna().to_numpy() for v in VARIANTS]
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(FIG_W, 3.4))
     bp = ax.boxplot(data, tick_labels=VARIANTS, patch_artist=True, showfliers=False)
     for patch, v in zip(bp["boxes"], VARIANTS):
         patch.set_facecolor(COLORS[v])
         patch.set_alpha(0.7)
     ax.set_yscale("log")
-    ax.set_ylabel("CVE (skala log)")
-    ax.set_title("Rozklad liczby CVE per klasa utwardzenia")
+    ax.set_ylabel("Liczba podatności (skala logarytmiczna)")
     ax.grid(axis="y", alpha=0.3)
     savefig(fig, out_dir, "5_1_cve_by_variant")
 
 
 def fig_size_pkg_by_variant(df: pd.DataFrame, out_dir: Path) -> None:
-    fig, axes = plt.subplots(1, 2, figsize=(11, 5))
-    for ax, col, title, ylabel in (
-        (axes[0], "arch_size_mb", "Rozmiar obrazu", "MB"),
-        (axes[1], "pkg_count", "Liczba pakietow", "pakiety"),
+    fig, axes = plt.subplots(1, 2, figsize=(FIG_W, 3.0), layout="constrained")
+    for ax, col, ylabel in (
+        (axes[0], "arch_size_mb", "Rozmiar obrazu [MB]"),
+        (axes[1], "pkg_count", "Liczba pakietów"),
     ):
         data = [df.loc[df["variant"] == v, col].dropna().to_numpy() for v in VARIANTS]
         bp = ax.boxplot(data, tick_labels=VARIANTS, patch_artist=True, showfliers=False)
         for patch, v in zip(bp["boxes"], VARIANTS):
             patch.set_facecolor(COLORS[v])
             patch.set_alpha(0.7)
-        ax.set_title(title)
         ax.set_ylabel(ylabel)
+        ax.tick_params(axis="x", labelsize=8)
         ax.grid(axis="y", alpha=0.3)
-    fig.suptitle("Powierzchnia ataku per klasa")
     savefig(fig, out_dir, "5_2_size_pkg_by_variant")
 
 
@@ -205,7 +232,7 @@ def fig_severity_share(df: pd.DataFrame, out_dir: Path) -> None:
         else:
             shares.append((totals / s).tolist())
     shares = np.array(shares)
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(FIG_W, 3.2))
     bottom = np.zeros(len(VARIANTS))
     labels = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
     palette = ("#8B0000", "#D62728", "#FF7F0E", "#FFD700")
@@ -215,21 +242,19 @@ def fig_severity_share(df: pd.DataFrame, out_dir: Path) -> None:
         bottom += shares[:, i]
     ax.set_xticks(x)
     ax.set_xticklabels(VARIANTS)
-    ax.set_ylabel("Udzial CVE")
+    ax.set_ylabel("Udział w liczbie podatności")
     ax.set_ylim(0, 1)
-    ax.set_title("Rozklad severity per klasa")
-    ax.legend(loc="upper right")
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.0), ncols=4, frameon=False)
     savefig(fig, out_dir, "5_3_severity_share")
 
 
 def fig_scatter_cve(df: pd.DataFrame, out_dir: Path, xcol: str, xlabel: str, name: str) -> None:
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(FIG_W, 3.8))
     for v in VARIANTS:
         sub = df[df["variant"] == v]
-        ax.scatter(sub[xcol], sub["cve_total"], s=8, alpha=0.35, c=COLORS[v], label=v)
+        ax.scatter(sub[xcol], sub["cve_total"], s=6, alpha=0.35, c=COLORS[v], label=v, rasterized=True)
     ax.set_xlabel(xlabel)
-    ax.set_ylabel("CVE")
-    ax.set_title(f"CVE vs {xlabel}")
+    ax.set_ylabel("Liczba podatności")
     ax.legend(markerscale=2)
     ax.grid(alpha=0.3)
     savefig(fig, out_dir, name)
@@ -242,11 +267,10 @@ def fig_cve_by_os_line(df: pd.DataFrame, out_dir: Path) -> None:
         return
     order = sorted(debian["os_line"].dropna().unique(), key=lambda s: (len(s), s))
     data = [debian.loc[debian["os_line"] == o, "cve_total"].to_numpy() for o in order]
-    fig, ax = plt.subplots(figsize=(9, 5))
+    fig, ax = plt.subplots(figsize=(FIG_W, 3.4))
     ax.boxplot(data, tick_labels=order, showfliers=False)
     ax.set_yscale("log")
-    ax.set_ylabel("CVE (skala log)")
-    ax.set_title("CVE vs linia Debiana (caly skan)")
+    ax.set_ylabel("Liczba podatności (skala logarytmiczna)")
     ax.tick_params(axis="x", rotation=30)
     ax.grid(axis="y", alpha=0.3)
     savefig(fig, out_dir, "5_6_cve_by_debian_line")
@@ -261,15 +285,14 @@ def fig_cve_vs_age(df: pd.DataFrame, out_dir: Path) -> None:
     # wiek w dniach wzgledem najnowszego tagu w probie
     ref = hub["tag_last_pushed"].max()
     hub["age_days"] = (ref - hub["tag_last_pushed"]).dt.total_seconds() / 86400
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(FIG_W, 3.8))
     for v in VARIANTS:
         sub = hub[hub["variant"] == v]
         if sub.empty:
             continue
-        ax.scatter(sub["age_days"], sub["cve_total"], s=8, alpha=0.35, c=COLORS[v], label=v)
-    ax.set_xlabel("Wiek tagu (dni wstecz od najnowszego w probie)")
-    ax.set_ylabel("CVE")
-    ax.set_title("CVE vs swiezosc tagu")
+        ax.scatter(sub["age_days"], sub["cve_total"], s=6, alpha=0.35, c=COLORS[v], label=v, rasterized=True)
+    ax.set_xlabel("Wiek tagu [dni wstecz od najnowszego tagu w próbie]")
+    ax.set_ylabel("Liczba podatności")
     ax.legend(markerscale=2)
     ax.grid(alpha=0.3)
     savefig(fig, out_dir, "5_7_cve_vs_age")
@@ -347,7 +370,7 @@ def friedman_report(df: pd.DataFrame) -> dict:
 
 
 def fig_delta_cve_pct(pairs: pd.DataFrame, out_dir: Path) -> None:
-    fig, ax = plt.subplots(figsize=(8, 5))
+    fig, ax = plt.subplots(figsize=(FIG_W, 3.4))
     data, labels = [], []
     for v in HARDENED:
         vals = pairs.loc[pairs["variant"] == v, "delta_cve_pct"].dropna() * 100
@@ -360,14 +383,13 @@ def fig_delta_cve_pct(pairs: pd.DataFrame, out_dir: Path) -> None:
         patch.set_facecolor(COLORS[v])
         patch.set_alpha(0.7)
     ax.axhline(0, color="black", lw=0.8)
-    ax.set_ylabel("Delta CVE wzgledem standard [%]")
-    ax.set_title("Redukcja CVE: (utwardzony - standard) / standard")
+    ax.set_ylabel(r"$\Delta\%$ liczby podatności względem klasy standard")
     ax.grid(axis="y", alpha=0.3)
     savefig(fig, out_dir, "6_1_delta_cve_pct")
 
 
 def fig_forest_effect(repo_df: pd.DataFrame, out_dir: Path) -> None:
-    fig, ax = plt.subplots(figsize=(8, 4))
+    fig, ax = plt.subplots(figsize=(FIG_W, 2.6))
     ys, labels = [], []
     for i, v in enumerate(HARDENED):
         vals = repo_df.loc[repo_df["variant"] == v, "delta_cve_pct"].dropna() * 100
@@ -376,12 +398,11 @@ def fig_forest_effect(repo_df: pd.DataFrame, out_dir: Path) -> None:
         med, lo, hi = bootstrap_ci(vals.to_numpy())
         ax.errorbar(med, i, xerr=[[med - lo], [hi - med]], fmt="o", color=COLORS[v], capsize=4)
         ys.append(i)
-        labels.append(f"{v} (n_repo={len(vals)})")
+        labels.append(f"{v} (n = {len(vals)})")
     ax.axvline(0, color="black", lw=0.8)
     ax.set_yticks(ys)
     ax.set_yticklabels(labels)
-    ax.set_xlabel("Mediana delta CVE% (per repo) z CI 95%")
-    ax.set_title("Wielkosc efektu utwardzania (poziom repozytorium)")
+    ax.set_xlabel(r"Mediana $\Delta\%$ liczby podatności dla repozytoriów, z przedziałem ufności 95%")
     ax.grid(axis="x", alpha=0.3)
     savefig(fig, out_dir, "6_2_forest_repo_effect")
 
@@ -394,11 +415,10 @@ def fig_delta_by_repo(pairs: pd.DataFrame, out_dir: Path, top_n: int = 15) -> No
     counts = slim.groupby("repo_key").size().sort_values(ascending=False).head(top_n)
     med = slim.groupby("repo_key")["delta_cve_pct"].median() * 100
     order = counts.index
-    fig, ax = plt.subplots(figsize=(9, 6))
+    fig, ax = plt.subplots(figsize=(FIG_W, 3.9))
     ax.barh([r.replace("library/", "") for r in order], med.loc[order], color=COLORS["slim"])
     ax.axvline(0, color="black", lw=0.8)
-    ax.set_xlabel("Mediana delta CVE% (slim - standard)")
-    ax.set_title(f"Heterogenicznosc: top {top_n} repo po liczbie par slim")
+    ax.set_xlabel(r"Mediana $\Delta\%$ liczby podatności (slim względem standard)")
     ax.invert_yaxis()
     ax.grid(axis="x", alpha=0.3)
     savefig(fig, out_dir, "6_3_delta_cve_pct_by_repo_slim")
@@ -412,15 +432,14 @@ def fig_friedman_box(df: pd.DataFrame, out_dir: Path) -> None:
     )
     if wide.empty:
         return
-    fig, ax = plt.subplots(figsize=(7, 5))
+    fig, ax = plt.subplots(figsize=(FIG_W, 3.2))
     data = [wide[v].to_numpy() for v in ("standard", "slim", "alpine")]
     bp = ax.boxplot(data, tick_labels=("standard", "slim", "alpine"), patch_artist=True, showfliers=False)
     for patch, v in zip(bp["boxes"], ("standard", "slim", "alpine")):
         patch.set_facecolor(COLORS[v])
         patch.set_alpha(0.7)
     ax.set_yscale("log")
-    ax.set_ylabel("CVE (skala log)")
-    ax.set_title(f"Friedman: grupy z kompletem slim+alpine (n={len(wide)})")
+    ax.set_ylabel("Liczba podatności (skala logarytmiczna)")
     ax.grid(axis="y", alpha=0.3)
     savefig(fig, out_dir, "6_5_friedman_triplet")
 
@@ -433,13 +452,12 @@ def fig_distroless_case(pairs: pd.DataFrame, out_dir: Path) -> None:
     # linia OS z wariantu utwardzonego (debianN)
     g = d.groupby(["family", "os_line"], as_index=False)["delta_cve"].median()
     labels = [f"{r.family}\n{r.os_line}" for r in g.itertuples()]
-    fig, ax = plt.subplots(figsize=(max(8, len(g) * 0.7), 5))
+    fig, ax = plt.subplots(figsize=(FIG_W, 3.6))
     ax.bar(range(len(g)), g["delta_cve"], color=COLORS["distroless"])
     ax.set_xticks(range(len(g)))
-    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.set_xticklabels(labels, rotation=60, ha="right", fontsize=8)
     ax.axhline(0, color="black", lw=0.8)
-    ax.set_ylabel("Mediana delta CVE (distroless - standard)")
-    ax.set_title(f"Studium distroless (n_par={len(d)})")
+    ax.set_ylabel(r"Mediana $\Delta$ liczby podatności")
     ax.grid(axis="y", alpha=0.3)
     savefig(fig, out_dir, "6_6_distroless_delta_by_family")
 
@@ -448,7 +466,7 @@ def fig_distroless_case(pairs: pd.DataFrame, out_dir: Path) -> None:
 
 
 def fig_tradeoff_scatter(pairs: pd.DataFrame, out_dir: Path) -> None:
-    fig, ax = plt.subplots(figsize=(8, 6))
+    fig, ax = plt.subplots(figsize=(FIG_W, 3.8))
     xs, ys = [], []
     for v in HARDENED:
         sub = pairs[pairs["variant"] == v]
@@ -457,7 +475,7 @@ def fig_tradeoff_scatter(pairs: pd.DataFrame, out_dir: Path) -> None:
         y = (-sub["delta_pkg_pct"] * 100).to_numpy()
         xs.append(x)
         ys.append(y)
-        ax.scatter(x, y, s=12, alpha=0.4, c=COLORS[v], label=v)
+        ax.scatter(x, y, s=8, alpha=0.4, c=COLORS[v], label=v, rasterized=True)
     # osie na P1–P99 — pojedyncze pary z wzrostem CVE nie zjadaja skali
     all_x = np.concatenate([a[~np.isnan(a)] for a in xs]) if xs else np.array([])
     all_y = np.concatenate([a[~np.isnan(a)] for a in ys]) if ys else np.array([])
@@ -466,16 +484,15 @@ def fig_tradeoff_scatter(pairs: pd.DataFrame, out_dir: Path) -> None:
         ax.set_ylim(np.nanpercentile(all_y, 1), np.nanpercentile(all_y, 99))
     ax.axvline(0, color="gray", lw=0.6)
     ax.axhline(0, color="gray", lw=0.6)
-    ax.set_xlabel("Redukcja CVE wzgledem standard [%]")
-    ax.set_ylabel("Spadek liczby pakietow wzgledem standard [%]")
-    ax.set_title("Bezpieczenstwo vs funkcjonalnosc (pary; osie P1–P99)")
+    ax.set_xlabel("Redukcja liczby podatności względem klasy standard [%]")
+    ax.set_ylabel("Spadek liczby pakietów [%]")
     ax.legend()
     ax.grid(alpha=0.3)
     savefig(fig, out_dir, "7_1_tradeoff_scatter")
 
 
 def fig_tradeoff_medians(repo_df: pd.DataFrame, out_dir: Path) -> None:
-    fig, ax = plt.subplots(figsize=(7, 6))
+    fig, ax = plt.subplots(figsize=(FIG_W, 3.6))
     for v in HARDENED:
         sub = repo_df[repo_df["variant"] == v]
         if sub.empty:
@@ -494,9 +511,8 @@ def fig_tradeoff_medians(repo_df: pd.DataFrame, out_dir: Path) -> None:
         )
     ax.axvline(0, color="gray", lw=0.6)
     ax.axhline(0, color="gray", lw=0.6)
-    ax.set_xlabel("Redukcja CVE [%] (mediana per repo)")
-    ax.set_ylabel("Spadek pakietow [%] (mediana per repo)")
-    ax.set_title("Trade-off metod utwardzania (CI 95%)")
+    ax.set_xlabel("Redukcja liczby podatności [%] (mediana dla repozytoriów)")
+    ax.set_ylabel("Spadek liczby pakietów [%] (mediana)")
     ax.legend()
     ax.grid(alpha=0.3)
     savefig(fig, out_dir, "7_2_tradeoff_medians")
@@ -504,18 +520,17 @@ def fig_tradeoff_medians(repo_df: pd.DataFrame, out_dir: Path) -> None:
 
 def fig_runtime_features(df: pd.DataFrame, out_dir: Path) -> None:
     flags = ("has_shell", "has_apt", "has_apk", "has_busybox")
-    labels = ("powloka", "apt", "apk", "busybox")
+    labels = ("powłoka", "apt", "apk", "BusyBox")
     x = np.arange(len(VARIANTS))
     width = 0.2
-    fig, ax = plt.subplots(figsize=(9, 5))
+    fig, ax = plt.subplots(figsize=(FIG_W, 3.2))
     for i, (flag, lab) in enumerate(zip(flags, labels)):
         rates = [df.loc[df["variant"] == v, flag].mean() * 100 for v in VARIANTS]
         ax.bar(x + i * width, rates, width, label=lab)
     ax.set_xticks(x + 1.5 * width)
     ax.set_xticklabels(VARIANTS)
-    ax.set_ylabel("% obrazow")
+    ax.set_ylabel("Odsetek obrazów [%]")
     ax.set_ylim(0, 105)
-    ax.set_title("Cechy runtime per klasa")
     ax.legend()
     ax.grid(axis="y", alpha=0.3)
     savefig(fig, out_dir, "7_3_runtime_features")
@@ -557,8 +572,8 @@ def run(scans_path: Path, out_dir: Path, summary_path: Path) -> None:
     fig_cve_by_variant(df, out_dir)
     fig_size_pkg_by_variant(df, out_dir)
     fig_severity_share(df, out_dir)
-    fig_scatter_cve(df, out_dir, "arch_size_mb", "Rozmiar [MB]", "5_4_cve_vs_size")
-    fig_scatter_cve(df, out_dir, "pkg_count", "Liczba pakietow", "5_5_cve_vs_pkg")
+    fig_scatter_cve(df, out_dir, "arch_size_mb", "Rozmiar obrazu [MB]", "5_4_cve_vs_size")
+    fig_scatter_cve(df, out_dir, "pkg_count", "Liczba pakietów", "5_5_cve_vs_pkg")
     fig_cve_by_os_line(df, out_dir)
     fig_cve_vs_age(df, out_dir)
 

@@ -276,8 +276,8 @@ Mediana globalna: 374 CVE, 174 pakiety.
 ![Rozkład CVE per klasa](../figures/5_1_cve_by_variant.png)
 
 **Omówienie.** Porządek median jest monotoniczny: `standard` > `slim` > `alpine` > `distroless`.
-Najważniejsza różnica to rozrzut: rozstęp międzykwartylowy `standard` obejmuje ponad rząd
-wielkości (185–1 834), `slim` jest skupiony (203–517). Pudełka `alpine` i `distroless` niemal się
+Najważniejsza różnica to rozrzut: rozstęp międzykwartylowy `standard` obejmuje około
+jednego rzędu wielkości (185–1 834), `slim` jest skupiony (203–517). Pudełka `alpine` i `distroless` niemal się
 pokrywają — w opisie ekosystemu te dwie klasy są blisko siebie, różnią się dopiero na parach
 (sekcja 6). To porównanie całych klas, nie par, więc miesza różne technologie i wersje.
 
@@ -326,7 +326,7 @@ Node.js), nie tylko pakiety systemowe. Widać to w `distroless/nodejs-debian9` (
 | `standard` | 2,0% | 19,6% | 58,5% | 19,1% | 0,9% | 54,8% |
 | `slim` | 1,9% | 21,1% | 55,0% | 20,8% | 1,3% | 47,1% |
 | `alpine` | 3,7% | 39,1% | 41,3% | 14,0% | 2,0% | **99,0%** |
-| `distroless` | 3,2% | 20,5% | 46,8% | 26,4% | 3,2% | 48,2% |
+| `distroless` | 3,2% | 20,5% | 46,8% | 26,4% | 3,1% | 48,2% |
 
 Mediana CRITICAL na obraz: 9 (`standard`), 9 (`slim`), 3 (`alpine`), 0 (`distroless`).
 
@@ -462,6 +462,12 @@ przy 4 repozytoriach test per repozytorium nie osiąga istotności (p = 0,0625 t
 osiągalne dla n = 4 w teście jednostronnym). Distroless raportujemy więc jako studium
 przypadku: test na 40 parach jest istotny, test na repozytoriach z definicji nie może być.
 
+Dwa szczegóły wyniku głównego trzeba podać obok tabeli. W `slim` test objął 18 z 21 repozytoriów,
+bo trzy (`clojure`, `debian`, `znc`) mają medianę delty równą zero i są pomijane; p = 3,8·10⁻⁶ to
+minimum osiągalne dla n = 18 (1/2¹⁸). W distroless granice CI 95% to skrajne mediany czterech
+repozytoriów (`node` −98,9%, `openjdk` −84,9%), więc jest to zakres obserwacji, a nie wiarygodne
+oszacowanie niepewności.
+
 Pudełko `slim` na wykresie 6.1 kończy się na 0: 439 z 1 507 par (29%) ma deltę dokładnie zero.
 Wyjaśnienie w 6.4.
 
@@ -493,21 +499,34 @@ Wyjaśnienie w 6.4.
 
 ![Delta CVE % per repozytorium — slim](../figures/6_3_delta_cve_pct_by_repo_slim.png)
 
-**Omówienie.** `slim` to w praktyce dwie różne operacje pod jedną nazwą:
+**Omówienie.** Pod nazwą `slim` kryją się bardzo różne efekty, a podział na języki i pozostałe
+obrazy ich nie wyjaśnia. Repozytoria tworzą trzy grupy:
 
-1. **`slim` języków** (`node`, `python`, `ruby`, `erlang`…): standardowy obraz stoi na
-   `buildpack-deps` z kompilatorami i bibliotekami deweloperskimi, a `slim` na gołym
-   `debian:*-slim`. Usuwane są całe pakiety, więc CVE spada o 85–96%.
-2. **`debian:*-slim`**: ten sam zestaw pakietów (Δ pakietów = 0), usunięte są tylko pliki —
-   dokumentacja, strony `man`, lokalizacje. Rozmiar spada o 43%, a liczba CVE wcale, bo skaner
-   liczy podatności po pakietach, nie po plikach. To samo w `clojure`.
+1. **Duża redukcja** (8 repozytoriów, −79…−96% CVE): `node`, `erlang`, `swift`, `unit`, `python`,
+   `pypy`, `ruby`, `elixir`. Prawdopodobna przyczyna: standardowy obraz stoi na `buildpack-deps` z
+   kompilatorami i bibliotekami deweloperskimi, a `slim` na gołym `debian:*-slim`. Potwierdzenie
+   wymaga analizy raportów na poziomie pakietów.
+2. **Redukcja umiarkowana** (10 repozytoriów, −19…−64% CVE). Należą tu także języki: `rust`, `perl`
+   i `haskell` tracą 58–74% pakietów, a tylko 26–38% CVE. Odwrotnie `node` i `swift`: 51–53% pakietów
+   i około 96% CVE. Liczy się więc to, *które* pakiety znikają.
+3. **Mediana równa zero** (3 repozytoria). `debian`: 311 z 452 par ma tę samą liczbę pakietów, 317
+   par ma deltę CVE równą zero, z czego w 63 `standard` ma 0 CVE (brak danych), a w pozostałych 135
+   parach mediana zmiany to −1,8%. Rozmiar spada o 43%; prawdopodobnie usuwane są pliki (dokumentacja,
+   strony `man`, lokalizacje). `clojure` to wynik mieszany: 89 ze 151 par bez zmiany liczby pakietów,
+   a w 46 parach ze zmianą CVE mediana to −44,9%. `znc` ma tylko jedną parę.
 
-To najciekawszy pojedynczy wynik dla rozdziału 6: **zmniejszenie rozmiaru bez usunięcia
-pakietów nie zmienia profilu CVE**. Mediana per repozytorium (−53%) jest średnią z tych dwóch
-mechanizmów, stąd szeroki przedział ufności.
+Związek między spadkiem pakietów a spadkiem CVE na poziomie 21 repozytoriów jest umiarkowany
+(ρ = 0,63, p = 0,002). Mediana −53% to środkowa wartość z tych 21 repozytoriów, stąd szeroki
+przedział ufności.
+
+Wśród wszystkich par `slim` 407 ma niezmienioną liczbę pakietów i w każdej z nich nie zmienia się
+też liczba CVE. Z 439 par z zerową deltą 422 należą do `debian` i `clojure`, a w 71 `standard` ma
+0 CVE. To najciekawszy pojedynczy wynik dla rozdziału 5: **zmniejszenie rozmiaru bez usunięcia
+pakietów nie zmienia profilu CVE widzianego przez skaner**. Skaner liczy podatności po pakietach,
+a nie po plikach, więc wynik nie pokazuje, czy usunięte pliki mają znaczenie dla bezpieczeństwa.
 
 Pary, w których `slim` ma *więcej* CVE (8): `jetty` (5) i `maven` (3) z JDK 16–18, np.
-`jetty:11.0.7-jdk17` 367 → `-slim` 598. Wariant `slim` stoi tam na innej bazie niż pełny obraz.
+`jetty:11.0.7-jdk17` 367 → `-slim` 598. Można przypuszczać, że wariant `slim` stoi tam na innej bazie niż pełny obraz (do potwierdzenia w raportach).
 
 ### 6.5 Heterogeniczność `alpine`
 
@@ -526,15 +545,22 @@ Najmocniejsza redukcja: `spiped`, `varnish`, `erlang`, `httpd`, `ruby`, `python`
 62 z 1 315 par (4,7%) ma więcej CVE w `alpine`. Główne źródła: `jetty` (15), `gradle` (10),
 `nats-streaming` (8), `amazoncorretto` (7), `nats` i `caddy` (po 6).
 
-**Omówienie.** Gdy `alpine` wypada gorzej, prawie zawsze `standard` nie jest „pełnym” obrazem:
+**Omówienie.** 62 gorsze pary nie tworzą jednej grupy. Mediana CVE `standard` wynosi w nich 79,
+a we wszystkich parach `alpine` 971, więc są to głównie obrazy już małe albo oparte na innej bazie:
 
-- `nats`, `nats-streaming`, `traefik`, `caddy`: obraz domyślny to pojedynczy plik binarny na
-  `scratch` albo już na Alpine. Wariant `alpine` dokłada system, więc liczba pakietów rośnie.
-- `gradle:*-ubi10`: `standard` stoi na Red Hat UBI 10 (20–24 CVE), `alpine` ma 250–370. Para
-  porównuje dwie różne dystrybucje, nie dwa poziomy utwardzenia jednej.
+- **18 par na Amazon Linux** (`amazoncorretto` 7, `jetty` 6, `maven` 5): `standard` ma 0 CVE,
+  `alpine` 1–2. Zero oznacza brak dopasowania, więc te pary nie dowodzą pogorszenia.
+- **14 par `nats` i `nats-streaming`:** obraz domyślny ma bardzo mało pakietów (mediana 10,5 i 1),
+  a wariant `alpine` dokłada system.
+- **9 par `gradle:*-ubi10`:** `standard` stoi na Red Hat UBI 10 (20–24 CVE), `alpine` ma 250–370.
+  Para porównuje dwie różne dystrybucje, nie dwa poziomy utwardzenia jednej.
+- **9 par `jetty:*-amazoncorretto`:** mediana 167 wobec 183 CVE.
+- **7 par `caddy` i `traefik`:** liczba pakietów obu wariantów jest niemal równa (około 118 i 179),
+  co może oznaczać, że obraz domyślny jest już minimalny. Bazę trzeba potwierdzić w raportach.
+- **Pozostałe 5 par:** `docker` (2), `gradle` na Ubuntu, `clojure` na Ubuntu i `golang:1-jessie`.
 
-Wniosek: `alpine` jest skuteczny wobec obrazów debianowych i ubuntowych. Wobec obrazów już
-minimalnych albo na UBI może pogorszyć wynik.
+Wniosek: `alpine` jest skuteczny przede wszystkim wobec dużych obrazów debianowych i ubuntowych.
+Wobec obrazów już małych albo na UBI może pogorszyć wynik.
 
 ### 6.6 Friedman: `standard` vs `slim` vs `alpine` w tych samych grupach
 
@@ -551,14 +577,15 @@ minimalnych albo na UBI może pogorszyć wynik.
 
 **Omówienie.** Gdy w jednej grupie są wszystkie trzy warianty, porządek jest niemal zawsze ten
 sam, a `alpine` prawie zawsze wygrywa z `slim`. Zastrzeżenie: 300 grup pochodzi tylko z 8
-repozytoriów, głównie języków z `buildpack-deps` (stąd mediana `standard` 3 526). To potwierdza
-porządek, ale nie jest reprezentatywne dla całego ekosystemu.
+repozytoriów, głównie języków z `buildpack-deps` (stąd mediana `standard` 3 526). Aż 226 z 300 grup
+to `node`, a grupy nie są niezależne. To potwierdza porządek, ale nie jest reprezentatywne dla
+całego ekosystemu.
 
 ### 6.7 Studium distroless
 
 40 par z 4 repozytoriów partnera. Partnerzy: `debian` (18 par — `static`, `base`,
 `base-nossl`, `cc`), `node` (13), `python` (7), `openjdk` (2). Java 17+ na `debian12`/`13` nie ma
-partnera (brak stabilnych tagów `openjdk`), więc 14 z 15 obrazów Javy jest tylko w opisie.
+partnera (brak stabilnych tagów `openjdk`), więc 12 z 14 obrazów Javy jest tylko w opisie, a 2 są w parach. Wszystkie 15 obrazów distroless bez partnera to 12 obrazów Javy i 3 obrazy `nodejs-debianN`.
 
 | Partner | Pary | Mediana ΔCVE | Mediana ΔCVE % | Mediana Δpakietów % | Mediana Δrozmiaru % |
 | --- | --- | --- | --- | --- | --- |
@@ -674,8 +701,8 @@ Najmniej CVE przy niezerowej liczbie pakietów w distroless: `static-debian13` (
 
 1. **Punkt w czasie.** Jedna baza CVE z 10.10.2026. Wyniki porównują klasy przy tej samej
    wiedzy o podatnościach; bezwzględne liczby będą rosły.
-2. **0 CVE ≠ bezpieczny.** 121 obrazów bez rozpoznanych pakietów i ~180 obrazów z wydań
-   testowych Debiana dają zero przez brak danych.
+2. **0 CVE ≠ bezpieczny.** 121 obrazów bez rozpoznanych pakietów daje zero przez brak danych. Prawdopodobnie
+   dotyczy to też 154 obrazów `debian` z pakietami, głównie z wydań testowych (w tym 30 z `debian14`).
 3. **Asymetria źródeł porad.** Alpine secdb vs Debian Security Tracker — 99% vs ~50% CVE z
    poprawką. Część przewagi `alpine` może być artefaktem danych.
 4. **Pary między dystrybucjami.** `alpine` dołącza do grupy najnowszego `standard`, który może
@@ -691,6 +718,10 @@ Najmniej CVE przy niezerowej liczbie pakietów w distroless: `static-debian13` (
     `created = 1970-01-01` (odtwarzalny build Bazela), więc wiek wzięto z `timeUploadedMs`
     przeskanowanego digestu w `gcr.io/v2/<repo>/tags/list` (uzupełnione 26.10.2026). Na Hubie
     jest to data publikacji tagu — obie miary oznaczają moment opublikowania obrazu.
+11. **Użytkownik domyślny nie jest stały w całym zbiorze.** 883 z 9 755 obrazów (9,1%) ma w
+    `config.User` użytkownika innego niż root: 713 `standard`, 114 `alpine`, 56 `slim`, 0 `distroless`
+    (policzone 07.11.2026 na wszystkich raportach). W każdej z 2 862 par obie strony mają ten sam
+    status, więc uprawnienia nie wchodzą do delt.
 
 ---
 
@@ -701,7 +732,7 @@ utwardzania istotnie zmniejszają liczbę znanych podatności względem obrazu s
 samej technologii i wersji. `alpine` daje około 91% redukcji w 53 repozytoriach, przy zachowaniu
 powłoki, ale ze zmianą biblioteki C i menedżera pakietów. Distroless daje redukcję podobnego
 rzędu (91% per repozytorium, 96% per para), przy największej utracie funkcji, i jest dostępny
-tylko dla kilku technologii. `slim` daje około 53%, ale jest dwiema różnymi operacjami: w obrazach
-języków usuwa pakiety i redukuje CVE o 85–96%, w `debian` usuwa tylko pliki i nie zmienia liczby
-CVE. Liczba CVE koreluje umiarkowanie z rozmiarem i liczbą pakietów (ρ ≈ 0,6) i słabo z wiekiem
+tylko dla kilku technologii. `slim` daje około 53%, ale efekt silnie zależy od technologii: w 8 repozytoriach
+redukcja wynosi 79–96%, w 10 repozytoriach 19–64%, a w 3 mediana jest równa zero, m.in. w `debian`,
+gdzie rozmiar maleje mimo braku zmiany liczby pakietów w większości par. Liczba CVE koreluje umiarkowanie z rozmiarem i liczbą pakietów (ρ ≈ 0,6) i słabo z wiekiem
 tagu (ρ ≈ 0,1); silniej zależy od bazy, na której obraz stoi.

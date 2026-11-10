@@ -265,7 +265,7 @@ uzasadnienie, w rozdz. 4 — jak je zrealizowano w kodzie.
 - Metryki z wiersza `scans.jsonl`: `cve_total`, `cve_critical`…`cve_unknown`, `cve_with_fix`,
   `pkg_count`, `has_shell`, `has_apt`, `has_apk`, `has_busybox` (`KOD.md` §14).
 - Skąd etykiety krytyczności: pole `Severity` w Trivy, nie zawsze ocena bazowa NVD **[CVSS]**.
-  Sprawdź w dokumentacji Trivy przed oddaniem.
+  Kolejność źródeł według dokumentacji Trivy: `LITERATURA.md`, sekcja CVSS.
 - Metody statystyczne: Wilcoxon (pary, jednostronny), Friedman (trójki), Spearman (korelacje),
   bootstrap mediany (CI 95%, 2 000 prób). Dlaczego nieparametryczne: rozkłady CVE są skośne
   (rozrzut ponad rząd wielkości). Dlaczego per repozytorium: `node` i `debian` to 27% próby.
@@ -302,7 +302,7 @@ nieoczywiste.
   Dockera w kontenerze (izolacja).
 - 12 kontenerów, każdy z własną częścią matrycy i własnym cache; podział na kolejne kawałki, bez
   balansowania; scalenie po kampanii (`KOD.md` §14).
-- Odporność: limit czasu 600 s, kod wyjścia, każda porażka zapisana, wznawianie po raporcie.
+- Odporność: limit czasu procesu 600 s (skany przerywał wcześniej domyślny limit Trivy, ok. 5 min), kod wyjścia, każda porażka zapisana, wznawianie po raporcie.
   Kontrast z PoC (75 raportów ze 100 — `WYNIKI.md` sekcja 1a).
 
 ### 4.3 Klasyfikacja wariantów i budowa matrycy
@@ -374,10 +374,11 @@ przeszkadza, popraw je w `Analyze.py` i wygeneruj wykresy ponownie.
 Pięć części, każda z rysunkiem:
 
 1. **CVE per klasa** (rys. `5_1`, tabela z `WYNIKI.md` 5.1). Mediany 595 / 366 / 98 / 70.
-   Porządek monotoniczny; `standard` ma rozrzut ponad rząd wielkości. Zaznacz: porównanie całych
+   Porządek monotoniczny; `standard` ma rozrzut około jednego rzędu wielkości. Zaznacz: porównanie całych
    klas miesza technologie — test jest w 5.3.
    **Zastrzeżenie o zerach:** 386 obrazów z 0 CVE, w tym 121 bez rozpoznanych pakietów
-   (`archlinux`, `busybox`, `fedora`) i ~150 z testowych wydań Debiana.
+   (`archlinux`, `busybox`, `fedora`) i 154 obrazy `debian` z pakietami, głównie z wydań testowych
+   (w tym 30 z `debian14`).
 2. **Rozmiar i pakiety** (rys. `5_2`). `slim` i `alpine` mają ten sam rozmiar (~66 MB), ale
    `alpine` ma dwa razy mniej pakietów. Distroless: 13 pakietów, najwyższa gęstość CVE na pakiet
    (4,96), mediana rozmiaru 21,5 MB (uzupełniona z manifestów `gcr.io`, `WYNIKI.md` 5.2).
@@ -399,16 +400,20 @@ Pięć części, każda z rysunkiem:
 1. Definicja pary i delty (krótko, odwołanie do 3.1).
 2. **Wynik główny** — tabela per repozytorium (`WYNIKI.md` 6.2) i rys. `6_2`:
    `slim` −53% [−85; −35], `alpine` −91% [−96; −86], distroless −91% [−99; −85]; p dla
-   `slim` i `alpine` < 10⁻⁵, distroless p = 0,0625 (minimum dla n = 4).
+   `slim` i `alpine` < 10⁻⁵, distroless p = 0,0625 (minimum dla n = 4). W `slim` test obejmuje 18 z 21 repozytoriów. CI distroless
+   to skrajne mediany czterech repozytoriów.
 3. Wynik pomocniczy na wszystkich parach (`WYNIKI.md` 6.3) i rys. `6_1`.
 4. **Heterogeniczność `slim`** (rys. `6_3`, ranking z `WYNIKI.md` 6.4) — najważniejsza obserwacja
-   rozdziału: `slim` języków usuwa pakiety (−85…−96%), `debian:*-slim` usuwa tylko pliki (0%
-   zmiany CVE przy −43% rozmiaru). 29% par ma deltę zero.
-5. **Heterogeniczność `alpine`** (`WYNIKI.md` 6.5): gorzej w 62 parach, gdy `standard` stoi na
-   `scratch` (`nats`) albo UBI (`gradle`). Pary między dystrybucjami nie mierzą utwardzania jednej
-   bazy.
+   rozdziału: efekt `slim` nie dzieli się prosto na języki i resztę. 8 repozytoriów ma −79…−96%, 10 ma
+   −19…−64% (m.in. `rust`, `perl`, `haskell`), a 3 mają medianę zero. W `debian` rozmiar spada o 43%
+   przy zerowej medianie zmiany CVE. W każdej z 407 par bez zmiany liczby pakietów nie zmienia się
+   też liczba CVE. 29% par ma deltę zero, a związek spadku pakietów ze spadkiem CVE to ρ = 0,63.
+5. **Heterogeniczność `alpine`** (`WYNIKI.md` 6.5): gorzej w 62 parach: 18 na Amazon Linux z 0 CVE po
+   stronie `standard` (brak dopasowania), 14 `nats` z bardzo małym obrazem domyślnym, 9 `gradle` na
+   UBI, reszta to `jetty`, `caddy`, `traefik` i pojedyncze przypadki. Pary między dystrybucjami nie
+   mierzą utwardzania jednej bazy.
 6. **Friedman** (rys. `6_5`, `WYNIKI.md` 6.6): porządek `standard` > `slim` > `alpine` w 288 z 300
-   grup; zastrzeżenie — tylko 8 repozytoriów.
+   grup; zastrzeżenie — tylko 8 repozytoriów, a 226 z 300 grup to `node`.
 
 ### 5.4 Studium przypadku: Distroless
 
@@ -423,7 +428,7 @@ Pięć części, każda z rysunkiem:
   dla `python3`); 5 starych obrazów Pythona ma powłokę.
 - Powiązanie z literaturą: definicja i cel **[Distroless]**; harmonogram wsparcia i stare linie
   bez aktualizacji (`SUPPORT_POLICY.md`).
-- `nonroot`: identyczne warstwy, różni się tylko użytkownik — zalecenie **[NIST 4.1.2]** spełnione
+- `nonroot`: identyczne warstwy i różnica tylko w użytkowniku (sprawdzone na `python3-debian12`) — zalecenie **[NIST 4.1.2]** spełnione
   bez kosztu w CVE (51 z 56 repozytoriów).
 
 ---
@@ -450,8 +455,8 @@ Cel rozdziału: punkt APD 7 — co z wyników wynika dla praktyka. Mniej liczb, 
 **Co napisać** (lista rekomendacji, każda z uzasadnieniem z rozdz. 5):
 
 1. Unikaj pełnych obrazów języków na `buildpack-deps` w produkcji — to one mają najwięcej CVE.
-2. Dla obrazów języków `slim` to zysk 85–96% przy minimalnym koszcie; dla samego `debian` `slim`
-   nie zmienia profilu CVE.
+2. `slim` daje zwykle zysk przy minimalnym koszcie, ale jego wielkość zależy od technologii (od 0
+   do −96%); dla samego `debian` mediana zmiany CVE wynosi zero. Zysk warto sprawdzić skanem.
 3. `alpine` gdy aplikacja nie zależy od glibc; sprawdź zależności natywne.
 4. Distroless gdy jest dostępny dla technologii i aplikacja nie potrzebuje powłoki; zawsze
    najnowsza linia Debiana, jawnie (`-debian13`) **[Distroless]**; wariant `nonroot`.
@@ -486,7 +491,7 @@ nowych liczb poza tymi z rozdz. 5, bez tabel.
 sekcja 10. Kolejność:
 
 1. Wszystkie trzy metody istotnie zmniejszają liczbę CVE (liczby per repozytorium).
-2. `slim` to dwie różne operacje — rozmiar bez usunięcia pakietów nie zmienia CVE.
+2. Efekt `slim` silnie zależy od technologii — rozmiar bez usunięcia pakietów nie zmienia profilu CVE widzianego przez skaner.
 3. `alpine` i distroless dają podobną redukcję przy różnym koszcie funkcjonalnym.
 4. Liczba CVE zależy bardziej od bazy i jej świeżości niż od samego rozmiaru.
 5. Cele pracy (z 1.1) osiągnięte — po jednym zdaniu na cel.
@@ -538,7 +543,8 @@ sekcja 10. Kolejność:
 - [ ] Distroless nazwany studium przypadku, z n = 4 i p = 0,0625.
 - [ ] Zastrzeżenie o zerach CVE i o asymetrii źródeł porad.
 - [ ] Każdy rysunek ma podpis po polsku i odwołanie w tekście.
-- [ ] Sprawdzone w dokumentacji Trivy: skąd pole `Severity` i dlaczego wydania testowe Debiana
-      dają 0 CVE.
+- [x] Sprawdzone w dokumentacji Trivy: skąd pole `Severity` (`LITERATURA.md`, sekcja CVSS).
+- [ ] Ustalone, dlaczego wydania testowe Debiana dają 0 CVE. Dokumentacja Trivy tego nie opisuje,
+      więc do czasu potwierdzenia opisywać to jako prawdopodobną przyczynę.
 - [ ] Literówki w spisie treści (6.1, 6.3) poprawione.
 - [ ] Sekcja 1.2 o AI zgodna z wymogami WIT.

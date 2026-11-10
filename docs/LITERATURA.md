@@ -225,7 +225,7 @@ To samo stanowisko co u Rice. Do pracy: izolacja jest tłem; pomiar dotyczy obra
 | Ryzyko | Sens | Czy praca to mierzy |
 | --- | --- | --- |
 | Podatności obrazu | Obraz jest statycznym archiwum. Obraz świeży w dniu buildu po dniach lub tygodniach ma już znane podatności. Łatać trzeba u źródła i wdrażać od nowa | **tak**, to główna metryka |
-| Błędy konfiguracji obrazu | Np. brak użytkownika innego niż root, demon SSH w obrazie | nie; wszystkie obrazy w badaniu działają jako root, to stała |
+| Błędy konfiguracji obrazu | Np. brak użytkownika innego niż root, demon SSH w obrazie | nie; 9,1% obrazów ma użytkownika innego niż root, ale w każdej parze status jest taki sam, więc nie wchodzi do delt |
 | Wbudowane złośliwe oprogramowanie | Obraz to zbiór plików; źródłem może być warstwa bazowa o nieznanym pochodzeniu | nie |
 | Sekrety jawnym tekstem w obrazie | Każdy z dostępem do obrazu je odczyta | nie |
 | Niezaufane obrazy | Łatwość ponownego użycia kusi do uruchamiania obcych obrazów | pośrednio: próba ogranicza się do Docker Official Images i `gcr.io/distroless` |
@@ -340,7 +340,7 @@ Aktualizacje bezpieczeństwa: projekt śledzi wydania Debiana, a akcje GitHuba a
 
 Dla pracy to ważne z dwóch powodów:
 
-1. Starsze linie (`debian9`–`debian12`) nadal da się pobrać, ale nie są według README aktualizowane. Pilotaż pokazał 258 CVE dla `python3-debian12` wobec 151 dla `python3-debian13`. Wynik klasy distroless zależy więc od linii, nie tylko od braku powłoki.
+1. Starsze linie (`debian9`–`debian12`) nadal da się pobrać, ale nie są według README aktualizowane. Kampania pokazała 291 CVE dla `python3-debian12` wobec 168 dla `python3-debian13`. Wynik klasy distroless zależy więc od linii, nie tylko od braku powłoki.
 2. Uzasadnia regułę parowania po linii Debiana: wynik ma porównywać utwardzenie, a nie wiek bazy.
 
 ### `gcr.io`, a nie `pkg.dev`
@@ -448,7 +448,7 @@ Wektor zapisuje wszystkie wartości metryk, np. `CVSS:3.1/AV:N/AC:L/PR:H/UI:N/S:
 
 `Scan.py` liczy kolumny `cve_critical`, `cve_high`, `cve_medium`, `cve_low` i `cve_unknown` z pola `Severity` w raporcie Trivy. Nazwy etykiet pokrywają się z jakościową skalą CVSS, ale trzeba to opisać ostrożnie:
 
-- Etykieta w raporcie Trivy pochodzi ze źródła danych, które Trivy wybiera dla danego pakietu (np. biuletyn dystrybucji albo NVD). Nie musi to być ocena bazowa CVSS v3.1 policzona przez NVD. Mechanizm doboru źródła trzeba sprawdzić w dokumentacji Trivy v0.75.0 przed napisaniem rozdziału 3.
+- Etykieta w raporcie Trivy pochodzi ze źródła danych, które Trivy wybiera dla danego pakietu (np. biuletyn dystrybucji albo NVD). Nie musi to być ocena bazowa CVSS v3.1 policzona przez NVD. Według dokumentacji Trivy (strona `latest`, sprawdzona 07.11.2026) dla pakietów systemowych pierwszeństwo ma ocena dostawcy dystrybucji; przy jej braku Trivy korzysta z wyniku CVSS, ocen innych dostawców i NVD, a bez żadnej oceny nadaje `UNKNOWN`. Dokumentacja nie opisuje osobnej procedury dla pakietów języków.
 - `UNKNOWN` nie jest kategorią CVSS. To brak przypisanej oceny.
 - Kampania nie liczy ocen czasowych ani środowiskowych. Wykres 5.3 pokazuje udział etykiet krytyczności, nie ryzyko.
 
@@ -506,7 +506,7 @@ Główny cel SLSA to integralność, czyli ochrona przed podmianą lub nieautory
 
 Zagrożenie dostępności: zależność znika z repozytorium (przykład Mimemagic). SLSA tego nie rozwiązuje. W kampanii to zjawisko widać wprost: 168 nieudanych skanów, w tym brakujące bloby na lustrze.
 
-Punkt G jest ciekawy dla pracy, bo przykładem są lustra rejestrów. Kampania używa lustra jako drogi pobrania i chroni się przez porównanie digestu z lustra z digestem z API Huba, nie przez weryfikację pochodzenia SLSA.
+Punkt G jest ciekawy dla pracy, bo przykładem są lustra rejestrów. Kampania używa lustra jako drogi pobrania i wskazuje obrazy digestem odczytanym z API Huba, bez weryfikacji pochodzenia SLSA.
 
 ### Ścieżka Build i poziomy
 
@@ -559,7 +559,7 @@ Brakuje tu też tego, co mierzy praca: liczby znanych podatności w artefakcie. 
 | Tożsamość artefaktu = digest (`subject`) | 3.3 i metodyka: pin digestem |
 | Poziomy Build L0–L3, ścieżka Source w v1.2 | 2.4, kontekst; nie oceniane w badaniu |
 | Poziom nie jest przechodni | 2.4: wybór bazy jest osobną decyzją od poziomu buildu aplikacji |
-| Zagrożenie G (lustra rejestrów) i dostępność | 3.3 i ograniczenia: lustro, porównanie digestów, 168 porażek |
+| Zagrożenie G (lustra rejestrów) i dostępność | 3.3 i ograniczenia: lustro, pin digestem, 168 porażek |
 | SBOM ≠ pochodzenie | 3.5: lista pakietów Trivy jako inwentarz, nie atestacja |
 
 ### Czego z SLSA nie wyciągać
@@ -586,7 +586,7 @@ NIST jako jedyne źródło zaleca wprost jedną z czterech klas: minimalistyczn�
 
 NIST, Rice i SLSA zgodnie traktują znane podatności jako stan zmienny w czasie, a tożsamość artefaktu jako coś, co nie może zależeć od tagu. Metodyka bierze z tego dwie decyzje: pin digestem (SLSA: `subject` = digest; NIST: `latest` nie gwarantuje świeżości) i jedną zamrożoną bazę (NIST i Rice: liczba CVE rośnie przy nieruchomym obrazie).
 
-Distroless pokazuje, że wynik klasy zależy od linii bazy. Stare linie Debiana nadal da się pobrać, ale nie są aktualizowane, i pilotaż to potwierdza (`python3-debian12`: 258 CVE, `python3-debian13`: 151). To uzasadnia parowanie po linii Debiana i osobną analizę świeżości.
+Distroless pokazuje, że wynik klasy zależy od linii bazy. Stare linie Debiana nadal da się pobrać, ale nie są aktualizowane, i kampania to potwierdza (`python3-debian12`: 291 CVE, `python3-debian13`: 168). To uzasadnia parowanie po linii Debiana i osobną analizę świeżości.
 
 CVSS ustawia granice interpretacji. Etykiety krytyczności w danych opisują podatność względem innych podatności, a nie ryzyko wdrożenia. Ocena środowiskowa, jedyne miejsce na konfigurację uruchomienia, nie jest liczona. Dlatego rozdział 5 pokazuje rozkład etykiet, a nie „ryzyko klasy”.
 

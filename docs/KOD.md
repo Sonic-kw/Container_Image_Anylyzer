@@ -866,7 +866,8 @@ wymagają binarium `trivy` (w kontenerze z Dockerfile).
 ### Flagi Trivy (w `run`)
 
 `--image-src remote --scanners vuln --list-all-pkgs --skip-db-update --skip-java-db-update
---format json`. Bez `--sbom-sources`. Timeout domyślnie 600 s; nieszerowy kod wyjścia albo
+--format json`. Bez `--sbom-sources`. Limit procesu domyślnie 600 s; flaga `--timeout` nie jest przekazywana, więc
+wcześniej działa domyślny limit Trivy (w logach ok. 5 min). Nieszerowy kod wyjścia albo
 timeout → wiersz w `failures_part_i`, kampania idzie dalej.
 
 ### Resume
